@@ -65,8 +65,55 @@
   let db = load();
 
   function save() {
+    scheduleFlush();
     try { localStorage.setItem(KEY, JSON.stringify(db)); return true; }
     catch (e) { console.error('Could not save', e); return false; }
+  }
+
+  /* ---- optional remote sync (Claude artifact db) ----
+     Data is split into shard documents so none gets near the per-document size cap:
+     settings, members, partners, leads_<year>, visits_<month>, jobs_<month>. */
+  let remote = null, flushTimer = null, flushing = false, lastWritten = {};
+  const listeners = new Set();
+  let syncStatus = 'local';
+  const setStatus = (s) => { syncStatus = s; listeners.forEach(fn => fn(s)); };
+
+  function shards() {
+    const out = { settings: { settings: db.settings }, members: { items: db.members }, partners: { items: db.partners } };
+    const put = (key, item) => { (out[key] ||= { items: [] }).items.push(item); };
+    db.leads.forEach(l => put('leads_' + String(l.createdAt || '').slice(0, 4), l));
+    db.visits.forEach(v => put('visits_' + (v.month || 'none'), v));
+    db.jobs.forEach(j => put('jobs_' + (j.month || 'none'), j));
+    return out;
+  }
+
+  function scheduleFlush() {
+    if (!remote) return;
+    clearTimeout(flushTimer);
+    setStatus('saving');
+    flushTimer = setTimeout(flush, 700);
+  }
+
+  async function flush() {
+    if (!remote) return;
+    if (flushing) { scheduleFlush(); return; }
+    flushing = true;
+    try {
+      const now = shards();
+      for (const [key, body] of Object.entries(now)) {
+        const json = JSON.stringify(body);
+        if (lastWritten[key] === json) continue;
+        await remote.write(key, body);
+        lastWritten[key] = json;
+      }
+      for (const key of Object.keys(lastWritten)) {
+        if (!(key in now)) { await remote.del(key); delete lastWritten[key]; }
+      }
+      setStatus('synced');
+    } catch (e) {
+      console.error('Sync failed', e);
+      setStatus('error');
+    } finally { flushing = false; }
   }
 
   // Drop undefined keys so they don't overwrite defaults in Object.assign.
@@ -184,6 +231,32 @@
       });
       save();
       return n;
+    },
+
+    /* ---- sync ---- */
+    get syncStatus() { return syncStatus; },
+    onSyncStatus(fn) { listeners.add(fn); },
+    /* adapter: {load(): Promise<{key: body}>, write(key, body), del(key)} */
+    async connectRemote(adapter) {
+      setStatus('loading');
+      const docs = await adapter.load();
+      const keys = Object.keys(docs);
+      remote = adapter;
+      if (keys.length) {
+        const d = { settings: docs.settings?.settings || {} };
+        COLLECTIONS.forEach(c => d[c] = []);
+        keys.forEach(k => {
+          const col = k.split('_')[0];
+          if (COLLECTIONS.includes(col) && Array.isArray(docs[k].items)) d[col].push(...docs[k].items);
+        });
+        db = normalise(d);
+        keys.forEach(k => { lastWritten[k] = JSON.stringify(docs[k]); });
+        try { localStorage.setItem(KEY, JSON.stringify(db)); } catch {}
+        setStatus('synced');
+      } else {
+        await flush();   // first run: push whatever this browser already has
+      }
+      return keys.length > 0;
     },
 
     /* ---- backup ---- */

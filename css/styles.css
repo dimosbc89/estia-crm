@@ -22,7 +22,7 @@
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #12171d;
     --surface: #1a2028;
     --surface-2: #161c23;
@@ -43,6 +43,27 @@
     --shadow: none;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #12171d;
+  --surface: #1a2028;
+  --surface-2: #161c23;
+  --ink: #e8edf2;
+  --ink-2: #b3bfcc;
+  --ink-3: #8592a1;
+  --line: #2b3440;
+  --brand: #ff6b61;
+  --brand-ink: #10161d;
+  --brand-soft: #3a1f1d;
+  --accent: #ff6b61;
+  --bar: #9d9bc4;
+  --good: #7fd19f;  --good-bg: #183324;
+  --warn: #e6bf5c;  --warn-bg: #352a10;
+  --bad: #f08c8c;   --bad-bg: #3a1c1c;
+  --info: #8bbbe8;  --info-bg: #1a2c40;
+  --muted-bg: #242c36;
+  --shadow: none;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -241,6 +262,16 @@ dialog::backdrop { background: rgba(15, 20, 26, .45); }
   .page-head .row { width: 100%; }
   .monthnav .label { min-width: 0; flex: 1; }
 }
+
+/* standalone exported page (Download for printing) */
+body.printable { display: block; padding: 24px; }
+body.printable .no-print { display: none !important; }
+body.printable .report-head-print { display: block; margin-bottom: 12px; }
+.sync { display: flex; align-items: center; gap: 6px; }
+.sync::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.sync.synced::before { background: var(--good); }
+.sync.saving::before, .sync.loading::before { background: var(--warn); }
+.sync.error::before { background: var(--bad); }
 
 /* ---------- print (reports) ---------- */
 @media print {
