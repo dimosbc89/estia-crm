@@ -6,6 +6,8 @@ It's a static web app (HTML/CSS/JS) with no server and no build step. Your data 
 
 ## Run it
 
+- **As a private page on Claude (recommended):** https://claude.ai/artifact/65q7JBP6ZamqAXPezAYLtp. Data is saved privately to your Claude account, so it's the same on every device you sign in on. After code changes, rebuild with `python3 scripts/build-artifact.py` (writes `dist/estia-crm.html`) and republish that file.
+
 - **Locally:** open `index.html` in a browser, or run `python3 -m http.server` in this folder and go to http://localhost:8000.
 - **Online:** you can host it on GitHub Pages: repo **Settings → Pages → Deploy from branch**, then pick the branch and the root folder. Data still stays in each browser, so use one browser and computer as your main CRM, and move between devices with **Settings → Download backup / Restore**.
 
