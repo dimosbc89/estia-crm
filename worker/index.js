@@ -66,23 +66,30 @@ function loginPage(message = '', email = '') {
 @font-face{font-family:Manrope;font-weight:400 800;font-display:swap;src:url(/assets/fonts/manrope-latin-variable.woff2) format("woff2")}
 @font-face{font-family:Poppins;font-weight:400;font-display:swap;src:url(/assets/fonts/poppins-400-latin.woff2) format("woff2")}
 @font-face{font-family:Poppins;font-weight:500;font-display:swap;src:url(/assets/fonts/poppins-500-latin.woff2) format("woff2")}
-:root{--bg:#fff;--warm:#f7f7f9;--card:#fff;--ink:#0e0d1b;--muted:#595963;--line:#e8e8ec;--brand:#c8291d;--accent:#ff4438;--soft:#ffe9e7;--logo:none;color-scheme:light}
-@media (prefers-color-scheme:dark){:root{--bg:#0b0a16;--warm:#0b0a16;--card:#15142a;--ink:#f2f1f8;--muted:#b9b7c9;--line:#2a2942;--brand:#d9372b;--accent:#ff6b61;--soft:#3a1d22;--logo:brightness(0) invert(1);color-scheme:dark}}
+@font-face{font-family:Poppins;font-weight:600;font-display:swap;src:url(/assets/fonts/poppins-600-latin.woff2) format("woff2")}
+:root{--bg:#fff;--warm:#f7f7f9;--card:#fff;--ink:#0e0d1b;--muted:#595963;--line:#e8e8ec;--brand:#c8291d;--accent:#ff4438;--accent-text:#d6301f;--soft:#ffe9e7;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#0b0a16;--warm:#0b0a16;--card:#15142a;--ink:#f2f1f8;--muted:#b9b7c9;--line:#2a2942;--brand:#d9372b;--accent:#ff6b61;--accent-text:#ff6b61;--soft:#3a1d22;color-scheme:dark}}
 *{box-sizing:border-box}html,body{margin:0}
 body{min-height:100vh;display:flex;flex-direction:column;color:var(--ink);font:15px/1.55 Manrope,system-ui,-apple-system,Segoe UI,sans-serif;
   background:radial-gradient(900px 480px at 85% 10%,rgba(255,68,56,.09),transparent 65%),var(--warm)}
 .strip{background:#0e0d1b;color:#fff;font-size:13px;letter-spacing:.03em;text-align:center;padding:10px 16px}
 main{flex:1;display:grid;place-items:center;padding:40px 16px}
 form{width:min(420px,100%);background:var(--card);border:1px solid var(--line);border-radius:16px;padding:34px 30px;display:flex;flex-direction:column;gap:16px}
-.logo{height:48px;width:auto;align-self:flex-start;filter:var(--logo)}
-.eyebrow{color:var(--accent);font-weight:700;font-size:12px;letter-spacing:.2em;text-transform:uppercase;margin-top:6px}.eyebrow::before{content:"—— "}
+.logo{height:48px;width:auto;align-self:flex-start}
+.mark{display:none;align-items:center;gap:10px;font:600 28px/1 Poppins,sans-serif;color:var(--ink);align-self:flex-start}.mark img{width:44px;height:44px;display:block}
+@media (prefers-color-scheme:dark){.logo{display:none}.mark{display:inline-flex}}
+.eyebrow{color:var(--accent-text);font-weight:700;font-size:12px;letter-spacing:.2em;text-transform:uppercase;margin-top:6px}.eyebrow::before{content:"—— ";color:var(--accent)}
 h1{font:500 30px/1.15 Poppins,system-ui,sans-serif;letter-spacing:-.02em;margin:0}h1 em{color:var(--accent);font-weight:400}
 label{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:700;color:var(--muted)}
 input{font:inherit;font-size:16px;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
-input:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+input{border-radius:8px}
+input:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 4px rgba(255,68,56,.12)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 button{font:inherit;font-weight:600;border:0;border-radius:100px;padding:14px 26px;background:var(--brand);color:#fff;cursor:pointer;margin-top:4px}
+button{display:inline-flex;align-items:center;justify-content:center;gap:8px}
+button::after{content:"→";font-weight:400;transition:transform .2s}button:hover::after{transform:translateX(3px)}
 button:hover{background:#a92016}
-.err{background:var(--soft);border-left:3px solid var(--accent);border-radius:0 10px 10px 0;padding:10px 14px;margin:0;font-size:14px}
+.err{background:var(--soft);border-left:3px solid var(--accent);border-radius:8px;padding:10px 14px;margin:0;font-size:14px}
 .muted{color:var(--muted);font-size:13px;margin:0}
 footer{background:#0e0d1b;color:#9c9aab;font-size:13px;text-align:center;padding:18px 16px}
 </style></head><body>
@@ -90,12 +97,13 @@ footer{background:#0e0d1b;color:#9c9aab;font-size:13px;text-align:center;padding
 <main>
 <form method="post" action="/login">
   <img class="logo" src="/assets/estia-lockup-dark.webp" alt="Estia — Trusted Care For Your Greek Home" width="178" height="48">
+  <span class="mark" aria-hidden="true"><img src="/assets/apple-touch-icon.png" alt="" width="44" height="44">Estia</span>
   <div class="eyebrow">Team sign-in</div>
   <h1>Welcome <em>back</em></h1>
   ${message ? `<p class="err" role="alert">${message}</p>` : ''}
   <label>Email<input type="email" name="email" autocomplete="username" required value="${safeEmail}"></label>
   <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
-  <button type="submit">Sign in →</button>
+  <button type="submit">Sign in</button>
   <p class="muted">You stay signed in on this device for ${SESSION_DAYS} days.</p>
 </form>
 </main>

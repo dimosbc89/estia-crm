@@ -47,6 +47,8 @@
 
   function toast(msg) {
     const t = $('#toast');
+    const host = modal.open ? modal : document.body;   // an open modal <dialog> sits in the top layer, above everything else
+    if (t.parentNode !== host) host.appendChild(t);
     t.textContent = msg;
     t.classList.add('show');
     clearTimeout(toast._t);
@@ -78,7 +80,7 @@
   function printView(filename) {
     if (!IN_ARTIFACT) { window.print(); return; }
     const css = [...document.querySelectorAll('style')].map(x => x.textContent).join('\n');
-    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(filename)}</title><style>${css}</style></head><body class="printable"><main>${main.innerHTML}</main></body></html>`;
+    const html = `<!doctype html><html lang="en" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(filename)}</title><style>${css}</style></head><body class="printable"><main>${main.innerHTML}</main></body></html>`;
     download(filename + '.html', html, 'text/html');
   }
   const printLabel = () => IN_ARTIFACT ? 'Download to print' : 'Print / PDF';
@@ -179,20 +181,27 @@
     modalForm.innerHTML = `
       <div class="modal-head"><h2>${esc(title)}</h2><button type="button" class="btn ghost sm" data-close aria-label="Close">✕</button></div>
       <div class="modal-body">${body}</div>
-      <div class="modal-foot">${foot}<span class="spacer"></span>
-        <button type="button" class="btn" data-close>${onSave ? 'Cancel' : 'Close'}</button>
-        ${onSave ? `<button type="submit" class="btn primary">${esc(submitLabel)}</button>` : ''}
+      <div class="modal-foot">${foot ? `<div class="modal-extra">${foot}</div>` : ''}<span class="spacer"></span>
+        <div class="modal-main"><button type="button" class="btn" data-close>${onSave ? 'Cancel' : 'Close'}</button>
+        ${onSave ? `<button type="submit" class="btn primary">${esc(submitLabel)}</button>` : ''}</div>
       </div>`;
-    modal.style.width = wide ? 'min(900px, calc(100vw - 32px))' : '';
+    modal.style.width = '';
+    modal.classList.toggle('wide', !!wide);
     onSubmit = onSave || null;
     $$('[data-close]', modalForm).forEach(b => b.addEventListener('click', closeModal));
     if (bind) bind(modalForm);
+    focusableRows(modalForm);
     if (!modal.open) modal.showModal();
     $('.modal-body', modalForm).scrollTop = 0;
+    // Focus the first field of a new form; on a phone, opening an existing record must not raise the keyboard.
     const first = $('input:not([type=checkbox]):not([type=hidden]), textarea, select', $('.modal-body', modalForm));
-    if (first && !first.closest('details')) first.focus();
+    const touch = matchMedia('(pointer: coarse)').matches;
+    if (first && !first.closest('details') && !(touch && first.value)) first.focus();
   }
   function closeModal() { if (modal.open) modal.close(); onSubmit = null; }
+  modal.addEventListener('close', () => { const t = $('#toast'); if (t.parentNode === modal) document.body.appendChild(t); });
+  /* Rows and list items that open a record can be reached with Tab and opened with Enter / Space. */
+  function focusableRows(root) { $$('[data-open]:not(a):not(button)', root).forEach(el => { el.tabIndex = 0; }); }
   modalForm.addEventListener('submit', (e) => {
     e.preventDefault();
     if (!onSubmit) return closeModal();
@@ -319,12 +328,11 @@
         <div class="row">
           <button class="btn" data-act="paste-form">Paste form email</button>
           <button class="btn" data-act="new-lead">+ New request</button>
-          <button class="btn primary" data-act="log-visit">+ Log a visit</button>
         </div>
       </div>
       <div class="stats">
         ${stat('Active members', m.active.length, `${S.all('members').filter(x => x.status === 'Onboarding').length} onboarding`)}
-        ${stat('Monthly recurring revenue', money(m.mrr), 'ex VAT · annual plans ÷ 12')}
+        ${stat('MRR', money(m.mrr), 'ex VAT · annual plans ÷ 12')}
         ${stat('Revenue this month', money(m.revenue), target ? `${pct(m.revenue, target)}% of ${money(target)} target` : 'subscriptions + onboarding + add-ons')}
         ${stat('Visits this month', `${m.visited.length}/${m.visits.length}`, `${m.reported.length} reports sent`)}
         ${stat('Open requests', leads.filter(leadOpen).length, `${newLeads.length} new · pipeline ${money(pipelineMRR)}/mo`)}
@@ -377,18 +385,18 @@
       <div class="page-head">
         <div><h1>Requests</h1><div class="sub">Discovery-call requests from the website, WhatsApp, email and social.</div></div>
         <div class="row">
-          <button class="btn" data-act="import-csv">Import CSV</button>
-          <button class="btn" data-act="export-leads">Export CSV</button>
+          <button class="btn ghost" data-act="import-csv">Import CSV</button>
+          <button class="btn ghost" data-act="export-leads">Export CSV</button>
           <button class="btn" data-act="paste-form">Paste form email</button>
           <button class="btn primary" data-act="new-lead">+ New request</button>
         </div>
       </div>
-      <div class="card card-pad" style="margin-bottom:12px">
+      <div class="toolbar">
         <div class="row">
-          <div class="chips">${['Open', ...S.LEAD_STATUSES, 'All'].map(s => `<button class="chip ${f.status === s ? 'on' : ''}" data-lead-status="${esc(s)}">${esc(s)}<span class="c">${counts[s]}</span></button>`).join('')}</div>
+          <div class="chips">${['Open', ...S.LEAD_STATUSES, 'All'].map(s => `<button class="chip ${f.status === s ? 'on' : ''}" data-lead-status="${esc(s)}" aria-pressed="${f.status === s}">${esc(s)}<span class="c">${counts[s]}</span></button>`).join('')}</div>
           <span class="spacer"></span>
-          <input type="search" id="leadSearch" data-search="leadFilter.q" placeholder="Search…" value="${esc(f.q)}" style="width:200px">
-          <select id="leadSource">${options(ST().sources, f.source, 'All sources')}</select>
+          <input type="search" id="leadSearch" data-search="leadFilter.q" placeholder="Search…" value="${esc(f.q)}" class="filter-search" aria-label="Search requests">
+          <select id="leadSource" aria-label="Source">${options(ST().sources, f.source, 'All sources')}</select>
         </div>
       </div>
       <div class="card table-wrap">
@@ -527,16 +535,16 @@
     return `
       <div class="page-head">
         <div><h1>Members</h1><div class="sub">Owners on a home-watch plan, their property and billing.</div></div>
-        <div class="row"><button class="btn" data-act="export-members">Export CSV</button><button class="btn primary" data-act="new-member">+ New member</button></div>
+        <div class="row"><button class="btn ghost" data-act="export-members">Export CSV</button><button class="btn primary" data-act="new-member">+ New member</button></div>
       </div>
       <div class="stats">
         ${stat('Active', counts.Active, '')}
         ${stat('MRR', money(sum(all.filter(m => S.activeIn(m, mk)), m => S.memberMRR(m))), 'ex VAT')}
         ${ST().plans.map(p => stat(p.name, all.filter(m => m.status === 'Active' && m.plan === p.name).length, `${money(p.monthly)}/mo · ${p.visits} visit${p.visits > 1 ? 's' : ''}`)).join('')}
       </div>
-      <div class="card card-pad" style="margin-bottom:12px"><div class="row">
-        <div class="chips">${['Current', ...S.MEMBER_STATUSES, 'All'].map(s => `<button class="chip ${f.status === s ? 'on' : ''}" data-member-status="${esc(s)}">${esc(s)}<span class="c">${counts[s]}</span></button>`).join('')}</div>
-        <span class="spacer"></span><input type="search" data-search="memberFilter.q" placeholder="Search members…" value="${esc(f.q)}">
+      <div class="toolbar"><div class="row">
+        <div class="chips">${['Current', ...S.MEMBER_STATUSES, 'All'].map(s => `<button class="chip ${f.status === s ? 'on' : ''}" data-member-status="${esc(s)}" aria-pressed="${f.status === s}">${esc(s)}<span class="c">${counts[s]}</span></button>`).join('')}</div>
+        <span class="spacer"></span><input type="search" data-search="memberFilter.q" placeholder="Search members…" value="${esc(f.q)}" aria-label="Search members">
       </div></div>
       <div class="card table-wrap">
         ${list.length ? `<table><thead><tr><th>Member</th><th>Property</th><th>Plan</th><th class="num">Per month</th><th>Since</th><th>Status</th><th>Last visit</th></tr></thead>
@@ -615,7 +623,7 @@
     return `
       <div class="page-head no-print">
         <div><h1>Visit log</h1><div class="sub">Printable record of documented visits — useful for insurers.</div></div>
-        <div class="row"><a class="btn" href="#members">← Members</a>
+        <div class="row"><a class="btn ghost" href="#members">← Members</a>
           <select id="logYear">${options([0, 1, 2].map(i => String(new Date().getFullYear() - i)), year)}</select>
           <button class="btn primary" data-act="print-log">${printLabel()}</button></div>
       </div>
@@ -626,7 +634,7 @@
           Plan: ${esc(m.plan)} · Member since ${fmtDate(m.startDate)}${m.insurer ? ` · Insurer: ${esc(m.insurer)}` : ''}</p></div>
         </div>
         <div class="table-wrap" style="margin-top:14px">${visits.length ? `<table><thead><tr><th>#</th><th>Visit date</th><th>Status</th><th>Report sent</th><th>Time on site</th><th class="num">Photos</th><th>Findings</th></tr></thead>
-          <tbody>${visits.map((v, i) => `<tr><td>${i + 1}</td><td>${fmtDay(v.date)}</td><td>${esc(v.status === 'Skipped' ? 'Skipped' : 'Visited')}</td><td>${v.reportSentAt ? fmtDate(v.reportSentAt) : '—'}</td><td>${v.arrivedAt ? esc(v.arrivedAt + (v.leftAt ? '–' + v.leftAt : '')) : '—'}</td><td class="num">${(v.media || []).length || '—'}</td><td>${esc(v.issues || 'All clear')}${v.notes ? `<div class="muted small">${esc(v.notes)}</div>` : ''}</td></tr>`).join('')}</tbody></table>`
+          <tbody>${visits.map((v, i) => `<tr><td>${i + 1}</td><td>${fmtDay(v.date)}</td><td>${esc(v.status === 'Skipped' ? 'Skipped' : 'Visited')}</td><td>${v.reportSentAt ? fmtDate(v.reportSentAt) : '—'}</td><td>${v.arrivedAt ? esc(v.arrivedAt + (v.leftAt ? '–' + v.leftAt : '')) : '—'}</td><td class="num">${(v.media || []).length || '—'}</td><td class="wrap">${esc(v.issues || 'All clear')}${v.notes ? `<div class="muted small">${esc(v.notes)}</div>` : ''}</td></tr>`).join('')}</tbody></table>`
           : '<div class="empty">No completed visits in this year.</div>'}</div>
         <p class="muted small" style="margin-top:12px">Generated ${fmtDate(todayISO())}. Timestamped photo reports for each visit are available on request.</p>
       </section>`;
@@ -646,7 +654,6 @@
         <div><h1>Monthly work</h1><div class="sub">Plan visits, send reports within 24 hours, and track add-on jobs.</div></div>
         <div class="row">${monthNav(mk, 'data-work-month')}
           <button class="btn" data-act="gen-visits" ${missing ? '' : 'disabled'}>${missing ? `Generate ${missing} visit${missing === 1 ? '' : 's'} from plans` : 'All plan visits created'}</button>
-          <button class="btn primary" data-act="log-visit">+ Log a visit</button>
           <button class="btn" data-act="new-visit">Plan a visit</button>
           <button class="btn" data-act="new-job">+ Add-on job</button>
         </div>
@@ -667,7 +674,7 @@
             <td class="muted">${esc(mm?.propertyAddress || mm?.region || '')}</td>
             <td data-stop><select class="pill-select s-${slug(v.status)}" data-set-status="visits:${v.id}">${options(S.VISIT_STATUSES, v.status)}</select></td>
             <td>${v.issues ? `<span class="pill s-in-progress">${esc(v.issues)}</span>` : '<span class="muted">—</span>'}</td>
-            <td data-stop class="num">${v.status === 'Scheduled' ? `<button class="btn sm" data-open="visit:${v.id}">Start report</button>` : v.status === 'Visited' ? `<button class="btn sm ${repLate ? 'primary' : ''}" data-visit-step="${v.id}">Report sent</button>` : ''}${(v.media || []).length ? ` <span class="muted small">📷 ${(v.media || []).length}</span>` : ''}</td>
+            <td data-stop class="num">${v.status === 'Scheduled' ? `<button class="btn sm" data-open="visit:${v.id}">Start report</button>` : v.status === 'Visited' ? `<button class="btn sm ${repLate ? 'primary' : ''}" data-visit-step="${v.id}">Mark report sent</button>` : ''}${(v.media || []).length ? ` <span class="muted small">📷 ${(v.media || []).length}</span>` : ''}</td>
           </tr>`; }).join('')}</tbody></table>`
           : `<div class="empty">No visits for ${esc(monthLabel(mk))}. ${active.length ? 'Use “Generate visits from plans” to create them for all active members.' : 'Add members first.'}</div>`}</div>
       </section>
@@ -752,8 +759,8 @@
         <div><h1>Partners</h1><div class="sub">Applications from “Become a partner”: trades, professionals and referral partners.</div></div>
         <div class="row"><button class="btn" data-act="paste-form">Paste form email</button><button class="btn primary" data-act="new-partner">+ New partner</button></div>
       </div>
-      <div class="card card-pad" style="margin-bottom:12px"><div class="chips">
-        ${['Open', ...S.PARTNER_STATUSES, 'All'].map(s => `<button class="chip ${f === s ? 'on' : ''}" data-partner-status="${esc(s)}">${esc(s)}<span class="c">${counts[s]}</span></button>`).join('')}
+      <div class="toolbar"><div class="chips">
+        ${['Open', ...S.PARTNER_STATUSES, 'All'].map(s => `<button class="chip ${f === s ? 'on' : ''}" data-partner-status="${esc(s)}" aria-pressed="${f === s}">${esc(s)}<span class="c">${counts[s]}</span></button>`).join('')}
       </div></div>
       <div class="card table-wrap">
         ${list.length ? `<table><thead><tr><th>Received</th><th>Name</th><th>Track</th><th>Trade / profession</th><th>Area</th><th>Status</th><th class="num">Jobs</th></tr></thead>
@@ -822,11 +829,11 @@
       <div class="page-head no-print">
         <div><h1>Reports</h1><div class="sub">Monthly performance${IN_ARTIFACT ? '. Download it, then open the file to print or save as PDF.' : '. Print or save as PDF to share.'}</div></div>
         <div class="row">${monthNav(mk, 'data-report-month')}
-          <button class="btn" data-act="export-report">Export CSV</button>
+          <button class="btn ghost" data-act="export-report">Export CSV</button>
           <button class="btn primary" data-act="print-report">${printLabel()}</button></div>
       </div>
 
-      <h2 style="margin:4px 0 10px">Revenue <span class="muted small">(ex VAT)</span></h2>
+      <div class="section-title" style="margin-top:4px">Revenue · ex VAT</div>
       <div class="stats">
         ${stat('Total revenue', money(m.revenue), delta(m.revenue, prev.revenue, money))}
         ${stat('Subscriptions (MRR)', money(m.mrr), `${m.active.length} active members`)}
@@ -838,7 +845,7 @@
         <div class="row"><b>Revenue target</b><span class="spacer"></span><span class="num">${money(m.revenue)} / ${money(target)} · ${pct(m.revenue, target)}%</span></div>
         <div class="progress"><span style="width:${Math.min(100, pct(m.revenue, target))}%"></span></div></div>` : ''}
 
-      <h2 style="margin:18px 0 10px">Members & service</h2>
+      <div class="section-title">Members & service</div>
       <div class="stats">
         ${stat('Active members', m.active.length, delta(m.active.length, prev.active.length))}
         ${stat('New / cancelled', `+${m.started.length} / −${m.cancelled.length}`, `churn ${churn}%`)}
@@ -847,7 +854,7 @@
         ${stat('Issues found', m.withIssues.length, 'on visits this month')}
       </div>
 
-      <h2 style="margin:18px 0 10px">Requests</h2>
+      <div class="section-title">Requests</div>
       <div class="stats">
         ${stat('Requests received', m.leads.length, delta(m.leads.length, prev.leads.length))}
         ${stat('Won / lost', `${m.won} / ${m.lost}`, decided ? `${pct(m.won, decided)}% win rate` : 'none decided yet')}
@@ -899,9 +906,9 @@
           <table class="plan-table"><thead><tr><th>Plan</th><th>€ / month</th><th>€ / year</th><th>Visits / mo</th></tr></thead>
           <tbody>${st.plans.map((p, i) => `<tr>
             <td><input type="text" name="plan_${i}_name" value="${esc(p.name)}"></td>
-            <td><input type="number" step="any" min="0" name="plan_${i}_monthly" value="${p.monthly}"></td>
-            <td><input type="number" step="any" min="0" name="plan_${i}_annual" value="${p.annual}"></td>
-            <td><input type="number" step="1" min="1" name="plan_${i}_visits" value="${p.visits}"></td></tr>`).join('')}</tbody></table>
+            <td data-label="€ / month"><input type="number" step="any" min="0" name="plan_${i}_monthly" value="${p.monthly}"></td>
+            <td data-label="€ / year"><input type="number" step="any" min="0" name="plan_${i}_annual" value="${p.annual}"></td>
+            <td data-label="Visits / mo"><input type="number" step="1" min="1" name="plan_${i}_visits" value="${p.visits}"></td></tr>`).join('')}</tbody></table>
           <div class="row" style="margin-top:14px"><button class="btn primary" type="submit">Save settings</button></div>
         </section>
         <section class="card card-pad">
@@ -945,29 +952,48 @@
   function render() {
     const view = views[state.view] ? state.view : 'dashboard';
     main.innerHTML = views[view]();
-    $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view || (view === 'visitlog' && a.dataset.view === 'members') || (view === 'visit' && a.dataset.view === 'month')));
+    $$('#nav a').forEach(a => {
+      const on = a.dataset.view === view || (view === 'visitlog' && a.dataset.view === 'members') || (view === 'visit' && a.dataset.view === 'month');
+      a.classList.toggle('active', on);
+      on ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current');
+    });
     const n = S.all('leads').filter(l => l.status === 'New').length;
     $('#newBadge').hidden = !n; $('#newBadge').textContent = n;
     const pn = S.all('partners').filter(p => p.status === 'New').length;
     $('#partnerBadge').hidden = !pn; $('#partnerBadge').textContent = pn;
     decorateHeading(view);
+    revealActive();
+    focusableRows(main);
     document.title = `${TITLES[view]} · Estia CRM`;
     bindVisitView();
   }
 
   /* Site-style headings: a red "—— EYEBROW" line and the last word of the title in red italics. */
-  const EYEBROWS = { dashboard: 'Today', leads: 'Pipeline', members: 'Memberships', month: 'On the ground', partners: 'Network',
-    reports: 'Performance', settings: 'Workspace', visit: 'On site', visitlog: 'Records' };
+  const EYEBROWS = { dashboard: 'Today', leads: 'Pipeline', members: 'Memberships', month: 'On the ground', partners: 'Trades & referrals',
+    reports: 'Performance', settings: 'Prices & lists', visit: 'On site', visitlog: 'Records' };
+  // One-word page names get a two-word title so they also carry the red italic accent (menu labels and tab titles stay short).
+  const TITLE_ACCENT = { leads: 'Discovery requests', members: 'Our members', partners: 'Partner network', reports: 'Monthly reports', settings: 'Workspace settings' };
   function decorateHeading(view) {
     const head = $('.page-head > div:first-child');
     const h1 = head && $('h1', head);
     if (!h1) return;
     if (EYEBROWS[view]) h1.insertAdjacentHTML('beforebegin', `<span class="eyebrow">${esc(EYEBROWS[view])}</span>`);
+    if (TITLE_ACCENT[view] && !h1.querySelector('*')) h1.textContent = TITLE_ACCENT[view];
     const words = h1.textContent.trim().split(/\s+/);
     if (words.length > 1 && !h1.querySelector('*')) {
       const last = words.pop();
       h1.innerHTML = `${esc(words.join(' '))} <em>${esc(last)}</em>`;
     }
+  }
+
+  /* On phones the menu and the filter chips scroll sideways: bring the current item into view (no-op when nothing overflows). */
+  function revealActive() {
+    [['#nav', 'a.active'], ['.chips', '.chip.on']].forEach(([wrap, on]) => $$(wrap).forEach(w => {
+      const a = $(on, w);
+      if (!a || w.scrollWidth <= w.clientWidth) return;
+      const wr = w.getBoundingClientRect(), ar = a.getBoundingClientRect();
+      w.scrollLeft += ar.left - wr.left - (wr.width - ar.width) / 2;
+    }));
   }
 
   function rerenderKeepingFocus(input) {
@@ -1069,7 +1095,7 @@
     return `
       <div class="page-head">
         <div><h1>Visit report</h1><div class="sub">${esc(m.name || '—')} · ${esc(m.propertyAddress || m.region || '')}</div></div>
-        <div class="row"><a class="btn" href="#month">← Monthly work</a><button class="btn" data-act="edit-visit">Change date / member</button><button class="btn primary" data-act="prepare-report">Prepare client report</button></div>
+        <div class="row"><a class="btn ghost" href="#month">← Monthly work</a><button class="btn" data-act="edit-visit">Edit visit</button><button class="btn primary" data-act="prepare-report">Prepare client report</button></div>
       </div>
 
       <section class="card card-pad vr-section">
@@ -1251,18 +1277,35 @@
     return new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); });
   }
 
+  /* The downloaded report carries the brand fonts: reuse the app's @font-face rules (file URLs locally / on Cloudflare, data: URIs in the artifact build). */
+  async function reportFontCSS() {
+    const out = [];
+    for (const sheet of document.styleSheets) {
+      let rules; try { rules = [...sheet.cssRules]; } catch { continue; }
+      for (const r of rules) {
+        if (!(r instanceof CSSFontFaceRule)) continue;
+        const m = r.cssText.match(/url\(\s*["']?([^"')]+)["']?\s*\)/); if (!m) continue;
+        try {
+          const data = m[1].startsWith('data:') ? m[1] : await blobToDataURL(new URL(m[1], sheet.href || location.href).href);
+          out.push(r.cssText.replace(m[0], `url("${data}")`));
+        } catch { /* falls back to system fonts */ }
+      }
+    }
+    return out.join('\n');
+  }
+
   /* Client report styles, scoped under .cr so the same markup works in the in-app preview and the downloaded file. */
   const REPORT_CSS = `
 .cr{font:15px/1.6 Manrope,system-ui,-apple-system,Segoe UI,sans-serif;color:#0e0d1b;background:#fff;max-width:820px;margin:0 auto;padding:32px 20px}
-.cr h1{font:500 30px/1.15 Poppins,system-ui,sans-serif;letter-spacing:-.02em;margin:18px 0 0}.cr h1 em{color:#ff4438;font-weight:400}
-.cr h2{font:500 18px Poppins,system-ui,sans-serif;margin:30px 0 12px;letter-spacing:-.01em}
-.cr .cr-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:16px;border-bottom:1px solid #e8e8ec}
+.cr h1{font:500 30px/1.15 Poppins,system-ui,sans-serif;letter-spacing:-.02em;margin:18px 0 0;color:#0e0d1b}.cr h1 em{color:#ff4438;font-weight:400}
+.cr h2{font:500 18px Poppins,system-ui,sans-serif;margin:30px 0 12px;letter-spacing:-.01em;color:#0e0d1b}
+.cr .cr-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding-bottom:16px;border-bottom:1px solid #e8e8ec}
 .cr .cr-logo{height:44px;width:auto;display:block}.cr .cr-head b{font:600 20px Poppins,system-ui,sans-serif}
-.cr .cr-eyebrow{color:#ff4438;font-weight:700;letter-spacing:.2em;text-transform:uppercase;font-size:11.5px}.cr .cr-eyebrow::before{content:"—— "}
-.cr .meta{color:#595963;margin-top:6px}.cr .box{background:#ffe9e7;border-left:3px solid #ff4438;border-radius:0 10px 10px 0;padding:14px 16px;white-space:pre-wrap}
+.cr .cr-eyebrow{color:#d6301f;font-weight:700;letter-spacing:.2em;text-transform:uppercase;font-size:11.5px;white-space:nowrap}.cr .cr-eyebrow::before{content:"—— ";color:#ff4438}
+.cr .meta{color:#595963;margin-top:6px}.cr .box{background:#ffe9e7;border-left:3px solid #ff4438;border-radius:8px;font-weight:500;padding:14px 16px;white-space:pre-wrap}
 .cr table{width:100%;border-collapse:collapse}.cr td{padding:9px 4px;border-bottom:1px solid #f2f2f5;vertical-align:top;background:none;color:#0e0d1b}
 .cr .ok{color:#23784a;font-weight:700}.cr .issue{color:#c8291d;font-weight:700}.cr .na{color:#65656f}
-.cr .prob{border:1px solid #e8e8ec;border-left:3px solid #c8291d;border-radius:0 10px 10px 0;padding:10px 14px;margin:8px 0}
+.cr .prob{border:1px solid #e8e8ec;border-left:3px solid #c8291d;border-radius:8px;padding:10px 14px;margin:8px 0}
 .cr .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
 .cr figure{margin:0;break-inside:avoid}.cr figure img,.cr figure video{width:100%;border-radius:12px;display:block;background:#f2f1f8}
 .cr figcaption{font-size:13px;color:#595963;margin-top:6px}.cr .foot{margin-top:34px;padding-top:14px;border-top:1px solid #e8e8ec;color:#65656f;font-size:12.5px}
@@ -1327,6 +1370,7 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
     const data = {};
     let videoBytes = 0, skipped = 0, logoData = '';
     try { const l = $('.brand-logo'); if (l) logoData = await blobToDataURL(l.src); } catch { /* report falls back to the business name */ }
+    const fontCSS = await reportFontCSS();
     for (const x of v.media || []) {
       try {
         if (x.type === 'video') {
@@ -1339,7 +1383,7 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
     }
     const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Visit report ${esc(v.date)} – ${esc(m.propertyAddress || m.name || '')}</title>
-<style>body{margin:0;background:#fff}${REPORT_CSS}</style></head><body>${reportBody(v, (x) => data[x.id], skipped, logoData)}</body></html>`;
+<style>${fontCSS}\nbody{margin:0;background:#fff}${REPORT_CSS}</style></head><body>${reportBody(v, (x) => data[x.id], skipped, logoData)}</body></html>`;
     const place = slug(m.propertyAddress || m.name || 'property').slice(0, 40);
     download(`estia-visit-${v.date}-${place}.html`, html, 'text/html');
   }
@@ -1552,6 +1596,7 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
 
   // Keyboard: "n" opens a new request when not typing.
   document.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('[data-open]:not(a):not(button)')) { e.preventDefault(); e.target.click(); return; }
     if (e.key === 'n' && !modal.open && !e.target.closest('input, textarea, select') && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); leadForm(); }
   });
 
@@ -1570,7 +1615,14 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
     synced: API ? 'All changes saved' : 'Saved to your Claude account',
     error: 'Not saved. Check your connection, then reload'
   };
-  const showSync = (st) => { syncNote.textContent = SYNC_TEXT[st] || ''; syncNote.className = 'sync ' + st; syncNote.title = st === 'error' ? 'Changes are kept on this device and saved again when you reload the page.' : ''; };
+  let lastSync = '';
+  const showSync = (st) => {
+    syncNote.textContent = SYNC_TEXT[st] || ''; syncNote.className = 'sync ' + st;
+    syncNote.title = st === 'error' ? 'Changes are kept on this device and saved again when you reload the page.' : '';
+    // The tooltip never shows on a phone: say it once when saving starts failing.
+    if (st === 'error' && lastSync !== 'error') toast('Not saved. Changes are kept on this device; check your connection, then reload.');
+    lastSync = st;
+  };
   S.onSyncStatus(showSync);
   showSync(S.syncStatus);
 
@@ -1586,10 +1638,10 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
       upload: (blob, { type }) => call('/media', { method: 'POST', body: blob, headers: { 'Content-Type': type } }),
       delete: (id) => call('/media/' + id, { method: 'DELETE' })
     };
-    // Sign-out link in the menu.
+    // Sign-out link in the announcement strip (the menu row has no room for it).
     const out = document.createElement('a');
     out.href = '/logout'; out.textContent = 'Sign out'; out.className = 'signout';
-    $('#nav').appendChild(out);
+    $('.topbar .container').appendChild(out);
     (async () => {
       try {
         await S.connectRemote({

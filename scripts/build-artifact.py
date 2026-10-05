@@ -22,6 +22,9 @@ scripts = ''.join(f'<script>\n{(root / src).read_text(encoding="utf-8")}\n</scri
 # Inline the logo: the artifact can't load files from relative paths.
 logo = 'data:image/webp;base64,' + base64.b64encode((root / 'assets/estia-lockup-dark.webp').read_bytes()).decode()
 body = body.replace('src="assets/estia-lockup-dark.webp"', f'src="{logo}"')
+# The red house-and-key mark (dark-theme logo and footer).
+icon = 'data:image/png;base64,' + base64.b64encode((root / 'assets/apple-touch-icon.png').read_bytes()).decode()
+body = body.replace('src="assets/apple-touch-icon.png"', f'src="{icon}"')
 
 out = f'{title}\n<style>\n{css}\n</style>\n{body.strip()}\n{scripts}'
 (root / 'dist').mkdir(exist_ok=True)
