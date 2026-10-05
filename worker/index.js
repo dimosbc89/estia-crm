@@ -57,7 +57,8 @@ async function currentUser(req, env) {
 }
 
 /* ---------------- login page ---------------- */
-function loginPage(message = '', email = '') {
+function loginPage(message = '', email = '', env = {}) {
+  const google = !!(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
   const safeEmail = email.replace(/[<>"&]/g, '');
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in · Estia CRM</title>
@@ -91,6 +92,10 @@ button::after{content:"→";font-weight:400;transition:transform .2s}button:hove
 button:hover{background:#a92016}
 .err{background:var(--soft);border-left:3px solid var(--accent);border-radius:8px;padding:10px 14px;margin:0;font-size:14px}
 .muted{color:var(--muted);font-size:13px;margin:0}
+.google{display:flex;align-items:center;justify-content:center;gap:10px;text-decoration:none;font-weight:600;color:var(--ink);border:1px solid var(--line);border-radius:100px;padding:13px 22px;background:var(--card)}
+.google:hover{border-color:var(--ink)}
+details{display:flex;flex-direction:column;gap:14px}details[open]{display:flex}details>summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:600}
+details label,details button{margin-top:12px}details button{width:100%}
 footer{background:#0e0d1b;color:#9c9aab;font-size:13px;text-align:center;padding:18px 16px}
 </style></head><body>
 <div class="strip">Estia CRM · Property care for owners abroad</div>
@@ -101,9 +106,12 @@ footer{background:#0e0d1b;color:#9c9aab;font-size:13px;text-align:center;padding
   <div class="eyebrow">Team sign-in</div>
   <h1>Welcome <em>back</em></h1>
   ${message ? `<p class="err" role="alert">${message}</p>` : ''}
-  <label>Email<input type="email" name="email" autocomplete="username" required value="${safeEmail}"></label>
-  <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+  ${google ? `<a class="google" href="/auth/google"><svg viewBox="0 0 48 48" width="20" height="20" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>Sign in with Google</a>
+  <details${message && email ? ' open' : ''}><summary>Use a password instead</summary>` : ''}
+  <label>Email<input type="email" name="email" autocomplete="username" ${google ? '' : 'required'} value="${safeEmail}"></label>
+  <label>Password<input type="password" name="password" autocomplete="current-password" ${google ? '' : 'required'}></label>
   <button type="submit">Sign in</button>
+  ${google ? '</details>' : ''}
   <p class="muted">You stay signed in on this device for ${SESSION_DAYS} days.</p>
 </form>
 </main>
@@ -119,20 +127,79 @@ async function login(req, env) {
   const form = await req.formData();
   const email = String(form.get('email') || '').trim().toLowerCase();
   const password = String(form.get('password') || '');
-  if (n >= MAX_LOGIN_ATTEMPTS) return loginPage('Too many attempts. Wait 15 minutes and try again.', email);
+  if (n >= MAX_LOGIN_ATTEMPTS) return loginPage('Too many attempts. Wait 15 minutes and try again.', email, env);
   const user = await env.DB.prepare('SELECT email, salt, pass_hash FROM users WHERE email = ?').bind(email).first();
   const ok = user && safeEqual(await hashPassword(password, user.salt), user.pass_hash);
   if (!ok) {
     await env.DB.prepare('INSERT INTO login_attempts (ip, at) VALUES (?, ?)').bind(ip, Date.now()).run();
-    return loginPage('That email and password don’t match.', email);
+    return loginPage('That email and password don’t match.', email, env);
   }
+  await env.DB.prepare('DELETE FROM login_attempts WHERE at < ?').bind(since).run();
+  return startSession(env, email);
+}
+
+async function startSession(env, email, extraCookies = []) {
   const token = randomHex(32);
   await env.DB.batch([
     env.DB.prepare('INSERT INTO sessions (token_hash, email, expires_at) VALUES (?, ?, ?)').bind(await sha256(token), email, Date.now() + SESSION_DAYS * 864e5),
-    env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(Date.now()),
-    env.DB.prepare('DELETE FROM login_attempts WHERE at < ?').bind(since)
+    env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(Date.now())
   ]);
-  return withHeaders(new Response(null, { status: 303, headers: { Location: '/', 'Set-Cookie': sessionCookie(token, SESSION_DAYS * 86400) } }));
+  const headers = new Headers({ Location: '/' });
+  headers.append('Set-Cookie', sessionCookie(token, SESSION_DAYS * 86400));
+  extraCookies.forEach(c => headers.append('Set-Cookie', c));
+  return withHeaders(new Response(null, { status: 303, headers }));
+}
+
+/* ---------------- Sign in with Google (OpenID Connect, authorization code + PKCE) ----------------
+   Only people who have a row in the `users` table can get in; Google just proves who they are.
+   Needs GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (Worker secrets). */
+const OAUTH_COOKIE = 'estia_oauth';
+const b64url = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const oauthCookie = (value, maxAge) => `${OAUTH_COOKIE}=${value}; Path=/auth; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+const GOOGLE_ERRORS = {
+  not_allowed: 'This Google account doesn’t have access to the Estia CRM. Sign in with your growagency.online account, or ask Dimos to add you.',
+  unverified: 'Google hasn’t verified this email address.',
+  failed: 'Google sign-in didn’t complete. Please try again.'
+};
+
+async function googleStart(req, env) {
+  const url = new URL(req.url);
+  const state = randomHex(16), verifier = randomHex(32);
+  const challenge = b64url(await crypto.subtle.digest('SHA-256', enc.encode(verifier)));
+  const auth = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+  auth.search = new URLSearchParams({
+    client_id: env.GOOGLE_CLIENT_ID, redirect_uri: url.origin + '/auth/google/callback', response_type: 'code',
+    scope: 'openid email profile', state, code_challenge: challenge, code_challenge_method: 'S256', prompt: 'select_account',
+    ...(env.GOOGLE_HOSTED_DOMAIN ? { hd: env.GOOGLE_HOSTED_DOMAIN } : {})
+  });
+  return withHeaders(new Response(null, { status: 302, headers: { Location: auth.toString(), 'Set-Cookie': oauthCookie(`${state}.${verifier}`, 600) } }));
+}
+
+async function googleCallback(req, env) {
+  const url = new URL(req.url);
+  const fail = (code) => withHeaders(new Response(null, { status: 302, headers: { Location: '/login?error=' + code, 'Set-Cookie': oauthCookie('', 0) } }));
+  const [state, verifier] = (getCookie(req, OAUTH_COOKIE) || '').split('.');
+  const code = url.searchParams.get('code');
+  if (!state || !verifier || !code || url.searchParams.get('state') !== state) return fail('failed');
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ code, client_id: env.GOOGLE_CLIENT_ID, client_secret: env.GOOGLE_CLIENT_SECRET,
+      redirect_uri: url.origin + '/auth/google/callback', grant_type: 'authorization_code', code_verifier: verifier })
+  });
+  if (!res.ok) { console.error('google token', res.status, await res.text()); return fail('failed'); }
+  const { id_token } = await res.json();
+  // The ID token comes straight from Google's token endpoint over TLS, so its claims can be read without
+  // re-checking the signature (Google's OpenID Connect guidance); we still check audience, issuer and expiry.
+  let claims;
+  try { claims = JSON.parse(atob(id_token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))); } catch { return fail('failed'); }
+  if (claims.aud !== env.GOOGLE_CLIENT_ID || !['accounts.google.com', 'https://accounts.google.com'].includes(claims.iss) || claims.exp * 1000 < Date.now()) return fail('failed');
+  if (!claims.email_verified) return fail('unverified');
+  const email = String(claims.email || '').toLowerCase();
+  const user = await env.DB.prepare('SELECT email FROM users WHERE email = ?').bind(email).first();
+  if (!user) return fail('not_allowed');
+  if (claims.name) await env.DB.prepare("UPDATE users SET name = ? WHERE email = ? AND name = ''").bind(claims.name, email).run();
+  return startSession(env, email, [oauthCookie('', 0)]);
 }
 
 async function logout(req, env) {
@@ -233,12 +300,14 @@ export default {
     // Brand images (logo, icons) are public so the sign-in page can show them. They contain no CRM data.
     if (path.startsWith('/assets/') && req.method === 'GET') return withHeaders(await env.ASSETS.fetch(req), { 'Cache-Control': 'public, max-age=86400' });
     if (path === '/login' && req.method === 'POST') return login(req, env);
+    if (path === '/auth/google' && env.GOOGLE_CLIENT_ID) return googleStart(req, env);
+    if (path === '/auth/google/callback' && env.GOOGLE_CLIENT_ID) return googleCallback(req, env);
     if (path === '/logout') return logout(req, env);
 
     const user = await currentUser(req, env);
     if (!user) {
       if (path.startsWith('/api/')) return json({ error: 'unauthorized' }, 401);
-      if (path === '/login') return loginPage();
+      if (path === '/login') return loginPage(GOOGLE_ERRORS[url.searchParams.get('error')] || '', '', env);
       return withHeaders(new Response(null, { status: 302, headers: { Location: '/login' } }));
     }
     if (path === '/login') return withHeaders(new Response(null, { status: 302, headers: { Location: '/' } }));

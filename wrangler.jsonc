@@ -11,5 +11,11 @@
   "r2_buckets": [
     { "binding": "MEDIA", "bucket_name": "estia-crm-media" }
   ],
+  // The CRM's address. estiagreekhome.online must be a zone in this Cloudflare account.
+  "routes": [
+    { "pattern": "crm.estiagreekhome.online", "custom_domain": true }
+  ],
+  // GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are set as secrets in the dashboard; keep them on deploy.
+  "keep_vars": true,
   "observability": { "enabled": true }
 }
