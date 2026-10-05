@@ -6,6 +6,10 @@ It's a static web app (HTML/CSS/JS) with no server and no build step. Your data 
 
 ## Run it
 
+- **On Cloudflare (with login):** a Cloudflare Worker (`worker/index.js`) serves the app from `public/` only to signed-in users. Data goes in the D1 database `estia-crm` and photos and videos in the R2 bucket `estia-crm-media`; both are already created and set in `wrangler.jsonc`. To deploy: Cloudflare dashboard → **Workers & Pages → Create → Import a repository** → pick this repo and branch. The deploy command is `npx wrangler deploy`. After changing the app, run `npm run build` (refreshes `public/` and `dist/`) and push.
+  - Add or reset a login: `python3 scripts/add-user.py name@example.com "Name" > user.sql` (it prints the new password), then `npx wrangler d1 execute estia-crm --remote --file user.sql`.
+  - Signed-in users can change their password in **Settings → Your account**.
+
 - **As a private page on Claude (recommended):** https://claude.ai/artifact/65q7JBP6ZamqAXPezAYLtp. Data is saved privately to your Claude account, so it's the same on every device you sign in on. After code changes, rebuild with `python3 scripts/build-artifact.py` (writes `dist/estia-crm.html`) and republish that file.
 
 - **Locally:** open `index.html` in a browser, or run `python3 -m http.server` in this folder and go to http://localhost:8000.

@@ -1,0 +1,12 @@
+{
+  "name": "estia-crm",
+  "private": true,
+  "scripts": {
+    "build": "python3 scripts/build-cloudflare.py && python3 scripts/build-artifact.py",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  }
+}

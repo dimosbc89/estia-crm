@@ -106,6 +106,7 @@ nav a {
   padding: 8px 10px; border-radius: 8px; color: var(--ink-2); text-decoration: none; font-weight: 500;
 }
 nav a:hover { background: var(--surface-2); color: var(--ink); }
+nav a.signout { margin-top: 8px; color: var(--ink-3); font-weight: 400; }
 nav a.active { background: var(--brand-soft); color: var(--brand); }
 .badge { background: var(--accent); color: #fff; border-radius: 999px; font-size: 11px; padding: 1px 7px; font-weight: 600; }
 .sidebar-foot { margin-top: auto; font-size: 12px; color: var(--ink-3); padding: 0 8px; }
@@ -741,6 +742,9 @@ body.printable .report-head-print { display: block; margin-bottom: 12px; }
 
   /* Inside a Claude artifact, files go through the viewer's download prompt; elsewhere a normal link. */
   const IN_ARTIFACT = typeof window.claude?.use === 'function';
+  // Set by the Cloudflare build (public/index.html): data and media go to our own server behind a login.
+  const API = window.ESTIA_API || '';
+  const MAX_VIDEO_MB = API ? 95 : 20;
   let downloadsCap = null;
   async function download(name, text, type = 'text/plain') {
     if (/\.csv$/.test(name)) text = '\ufeff' + text;   // so Excel reads Greek characters correctly
@@ -1601,10 +1605,19 @@ body.printable .report-head-print { display: block; margin-bottom: 12px; }
       <div class="grid grid-2" style="margin-top:16px">
         <section class="card card-pad">
           <h2>Backup & restore</h2>
-          <p class="muted small">${IN_ARTIFACT ? 'Your data is saved privately to your Claude account and follows you to any device where you open this page. A backup file is still a good idea once a month.' : 'Your data is stored in this browser only. Download a backup every week. To move to another computer, restore the backup there.'}</p>
+          <p class="muted small">${API ? 'Your data is saved online in your Cloudflare account and is the same on every device you sign in on. A backup file is still a good idea once a month.' : IN_ARTIFACT ? 'Your data is saved privately to your Claude account and follows you to any device where you open this page. A backup file is still a good idea once a month.' : 'Your data is stored in this browser only. Download a backup every week. To move to another computer, restore the backup there.'}</p>
           <div class="row"><button class="btn primary" data-act="backup">Download backup</button><button class="btn" data-act="restore">Restore from backup</button></div>
           <input type="file" id="restoreFile" accept=".json,application/json" hidden>
         </section>
+        ${API ? `<section class="card card-pad">
+          <h2>Your account</h2>
+          <p class="muted small">Signed in as <b id="meEmail">…</b></p>
+          <form id="pwForm" class="fields" autocomplete="off">
+            <label class="field"><span>Current password</span><input type="password" id="pwCurrent" autocomplete="current-password" required></label>
+            <label class="field"><span>New password (10+ characters)</span><input type="password" id="pwNext" autocomplete="new-password" minlength="10" required></label>
+            <div class="row"><button class="btn primary" type="submit">Change password</button><a class="btn" href="/logout">Sign out</a></div>
+          </form>
+        </section>` : ''}
         <section class="card card-pad">
           <h2>Data</h2>
           <p class="muted small">${S.all('leads').length} requests · ${S.all('members').length} members · ${S.all('visits').length} visits · ${S.all('jobs').length} jobs · ${S.all('partners').length} partners</p>
@@ -1690,7 +1703,7 @@ body.printable .report-head-print { display: block; margin-bottom: 12px; }
   const CHECK = { ok: 'OK', issue: 'Issue', na: 'N/A' };
   const SEVERITIES = ['Low', 'Medium', 'Urgent'];
   let assetsCap = null;                      // set at boot inside a Claude artifact (writers only)
-  const mediaUrl = (m) => '/_blob/' + m.id;
+  const mediaUrl = (m) => (API ? API + '/media/' : '/_blob/') + m.id;
   const visitTitle = (v) => `${memberName(v.memberId)} · ${fmtDay(v.date)}`;
   const timeNow = () => new Date().toTimeString().slice(0, 5);
 
@@ -1780,9 +1793,9 @@ body.printable .report-head-print { display: block; margin-bottom: 12px; }
         <div class="card-head"><h2>Photos & videos</h2><span class="muted small">${media.filter(x => x.type === 'image').length} photos · ${media.filter(x => x.type === 'video').length} videos</span></div>
         <div class="card-pad">
           ${canUpload ? `<label class="btn primary upload-btn"><input type="file" id="mediaInput" accept="image/*,video/mp4,video/webm,video/quicktime" multiple hidden>＋ Add photos / videos</label>
-            <p class="muted small" style="margin:8px 0 0">Photos are resized and stamped with the date and time they were taken. Videos: MP4 or MOV, up to 20 MB each (about 15–20 seconds).</p>
+            <p class="muted small" style="margin:8px 0 0">Photos are resized and stamped with the date and time they were taken. Videos: MP4 or MOV, up to ${MAX_VIDEO_MB} MB each${API ? '' : ' (about 15–20 seconds)'}.</p>
             <div id="uploadStatus" class="small" aria-live="polite"></div>`
-          : `<p class="muted small" style="margin:0">${IN_ARTIFACT ? 'Only people who can edit this page can add photos.' : 'Photos and videos can be added in the Claude page version of the CRM.'}</p>`}
+          : `<p class="muted small" style="margin:0">${IN_ARTIFACT ? 'Only people who can edit this page can add photos.' : 'Photos and videos can be added in the online version of the CRM.'}</p>`}
           ${media.length ? `<div class="media-grid">${media.map(x => `
             <figure class="media-item">
               ${x.type === 'image' ? `<a href="${mediaUrl(x)}" target="_blank" rel="noopener"><img src="${mediaUrl(x)}" alt="${esc(x.caption || 'Visit photo')}" loading="lazy"></a>` : `<video src="${mediaUrl(x)}" controls preload="metadata" playsinline></video>`}
@@ -1863,7 +1876,7 @@ body.printable .report-head-print { display: block; margin-bottom: 12px; }
   }
 
   const UPLOAD_ERRORS = {
-    too_large: 'is over 20 MB. Record a shorter clip (about 15 seconds) or send it by WhatsApp instead.',
+    too_large: `is over ${MAX_VIDEO_MB} MB. Record a shorter clip or send it by WhatsApp instead.`,
     unsupported_type: 'is a file type that can’t be stored. Use JPG/PNG photos or MP4 videos.',
     quota_or_state: 'could not be stored: the photo storage is full.',
     rate_limited: 'was not uploaded: too many uploads at once. Wait a moment and try again.',
@@ -1884,7 +1897,7 @@ body.printable .report-head-print { display: block; margin-bottom: 12px; }
         let blob = f, type, takenAt = new Date(f.lastModified || Date.now()).toISOString();
         if (isVideo) {
           type = /webm/.test(f.type) ? 'video/webm' : 'video/mp4';   // iPhone .mov (H.264/HEVC) is stored as MP4
-          if (f.size > 20 * 1024 * 1024) throw { code: 'too_large' };
+          if (f.size > MAX_VIDEO_MB * 1024 * 1024) throw { code: 'too_large' };
         } else {
           ({ blob, takenAt } = await preparePhoto(f));
           type = 'image/jpeg';
@@ -2222,14 +2235,51 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
     local: 'Saved in this browser. Back it up regularly from Settings.',
     loading: 'Loading your data…',
     saving: 'Saving…',
-    synced: 'Saved to your Claude account',
-    error: 'Could not save to your Claude account. Changes are kept in this browser; reload to retry.'
+    synced: API ? 'All changes saved' : 'Saved to your Claude account',
+    error: API ? 'Could not save. Check your internet connection; changes are kept on this device and saved when you reload.' : 'Could not save to your Claude account. Changes are kept in this browser; reload to retry.'
   };
   const showSync = (st) => { syncNote.textContent = SYNC_TEXT[st] || ''; syncNote.className = 'sidebar-foot sync ' + st; };
   S.onSyncStatus(showSync);
   showSync(S.syncStatus);
 
-  if (IN_ARTIFACT) {
+  if (API) {
+    const call = async (path, opts = {}) => {
+      const res = await fetch(API + path, { credentials: 'same-origin', ...opts, headers: { 'X-Estia': '1', ...(opts.headers || {}) } });
+      if (res.status === 401) { location.href = '/login'; throw new Error('signed out'); }
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw Object.assign(new Error(body.error || res.statusText), { code: body.error });
+      return body;
+    };
+    assetsCap = {
+      upload: (blob, { type }) => call('/media', { method: 'POST', body: blob, headers: { 'Content-Type': type } }),
+      delete: (id) => call('/media/' + id, { method: 'DELETE' })
+    };
+    // Sign-out link in the menu.
+    const out = document.createElement('a');
+    out.href = '/logout'; out.textContent = 'Sign out'; out.className = 'signout';
+    $('#nav').appendChild(out);
+    (async () => {
+      try {
+        await S.connectRemote({
+          load: async () => (await call('/docs')).docs,
+          write: (key, body) => call('/docs/' + key, { method: 'PUT', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }),
+          del: (key) => call('/docs/' + key, { method: 'DELETE' })
+        });
+        render();
+      } catch (e) { console.error(e); showSync('error'); }
+    })();
+    document.addEventListener('submit', async (e) => {
+      if (e.target.id !== 'pwForm') return;
+      e.preventDefault();
+      try {
+        await call('/password', { method: 'POST', body: JSON.stringify({ current: $('#pwCurrent').value, next: $('#pwNext').value }), headers: { 'Content-Type': 'application/json' } });
+        e.target.reset(); toast('Password changed. Other devices were signed out.');
+      } catch (err) { toast(err.message); }
+    });
+    const showMe = async () => { const el = $('#meEmail'); if (el) el.textContent = (await call('/me')).email; };
+    window.addEventListener('hashchange', () => { if (state.view === 'settings') showMe(); });
+    if (state.view === 'settings') showMe();
+  } else if (IN_ARTIFACT) {
     (async () => {
       const [dbCap, userCap, dl, assets] = await Promise.all(['db', 'user', 'downloads', 'assets'].map(n => window.claude.use(n)));
       downloadsCap = dl;
