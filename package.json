@@ -8,5 +8,6 @@
   },
   "devDependencies": {
     "wrangler": "^4.40.0"
-  }
+  },
+  "type": "module"
 }

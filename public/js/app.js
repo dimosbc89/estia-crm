@@ -950,9 +950,24 @@
     $('#newBadge').hidden = !n; $('#newBadge').textContent = n;
     const pn = S.all('partners').filter(p => p.status === 'New').length;
     $('#partnerBadge').hidden = !pn; $('#partnerBadge').textContent = pn;
-    $('#brandName').textContent = ST().businessName || 'Estia CRM';
+    decorateHeading(view);
     document.title = `${TITLES[view]} · Estia CRM`;
     bindVisitView();
+  }
+
+  /* Site-style headings: a red "—— EYEBROW" line and the last word of the title in red italics. */
+  const EYEBROWS = { dashboard: 'Today', leads: 'Pipeline', members: 'Memberships', month: 'On the ground', partners: 'Network',
+    reports: 'Performance', settings: 'Workspace', visit: 'On site', visitlog: 'Records' };
+  function decorateHeading(view) {
+    const head = $('.page-head > div:first-child');
+    const h1 = head && $('h1', head);
+    if (!h1) return;
+    if (EYEBROWS[view]) h1.insertAdjacentHTML('beforebegin', `<span class="eyebrow">${esc(EYEBROWS[view])}</span>`);
+    const words = h1.textContent.trim().split(/\s+/);
+    if (words.length > 1 && !h1.querySelector('*')) {
+      const last = words.pop();
+      h1.innerHTML = `${esc(words.join(' '))} <em>${esc(last)}</em>`;
+    }
   }
 
   function rerenderKeepingFocus(input) {
@@ -1066,7 +1081,7 @@
           <label class="field"><span>Indoor humidity (%RH)</span><input type="number" id="vr-humidity" data-vr="humidity" min="0" max="100" step="1" inputmode="numeric" value="${esc(v.humidity ?? '')}" placeholder="e.g. 62"></label>
           <label class="field"><span>Indoor temperature (°C)</span><input type="number" id="vr-temp" data-vr="temperature" step="0.5" inputmode="decimal" value="${esc(v.temperature ?? '')}" placeholder="e.g. 19"></label>
         </div>
-        ${num(v.humidity) >= 65 ? `<p class="small" style="margin:10px 0 0"><span class="pill s-in-progress">High humidity</span> Above 65 %RH, mould risk rises. Consider ventilating longer or a dehumidifier.</p>` : ''}
+        ${num(v.humidity) >= 65 ? `<p class="callout small" style="margin:14px 0 0"><b>High humidity.</b> Above 65 %RH, mould risk rises. Ventilate longer or suggest a dehumidifier to the owner.</p>` : ''}
       </section>
 
       <section class="card vr-section">
@@ -1238,20 +1253,23 @@
 
   /* Client report styles, scoped under .cr so the same markup works in the in-app preview and the downloaded file. */
   const REPORT_CSS = `
-.cr{font:15px/1.5 Manrope,system-ui,-apple-system,Segoe UI,sans-serif;color:#0e0d1b;background:#fff;max-width:820px;margin:0 auto;padding:28px 18px}
-.cr h1{font:600 22px Poppins,system-ui,sans-serif;margin:0}.cr h2{font:600 16px Poppins,system-ui,sans-serif;margin:26px 0 10px}
-.cr .brand{color:#c8291d;font-weight:700;letter-spacing:.04em;text-transform:uppercase;font-size:12px}
-.cr .meta{color:#595963;margin-top:4px}.cr .box{background:#f7f7f9;border:1px solid #e8e8ec;border-radius:10px;padding:12px 14px;white-space:pre-wrap}
-.cr table{width:100%;border-collapse:collapse}.cr td{padding:7px 4px;border-bottom:1px solid #e8e8ec;vertical-align:top;background:none}
-.cr .ok{color:#2e7d4f;font-weight:700}.cr .issue{color:#b23b3b;font-weight:700}.cr .na{color:#65656f}
-.cr .prob{border-left:4px solid #c8291d;padding:6px 12px;margin:8px 0;background:#fff7f6}
-.cr .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
-.cr figure{margin:0;break-inside:avoid}.cr figure img,.cr figure video{width:100%;border-radius:8px;display:block;background:#eee}
-.cr figcaption{font-size:13px;color:#595963;margin-top:4px}.cr .foot{margin-top:30px;color:#65656f;font-size:12px}
+.cr{font:15px/1.6 Manrope,system-ui,-apple-system,Segoe UI,sans-serif;color:#0e0d1b;background:#fff;max-width:820px;margin:0 auto;padding:32px 20px}
+.cr h1{font:500 30px/1.15 Poppins,system-ui,sans-serif;letter-spacing:-.02em;margin:18px 0 0}.cr h1 em{color:#ff4438;font-weight:400}
+.cr h2{font:500 18px Poppins,system-ui,sans-serif;margin:30px 0 12px;letter-spacing:-.01em}
+.cr .cr-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:16px;border-bottom:1px solid #e8e8ec}
+.cr .cr-logo{height:44px;width:auto;display:block}.cr .cr-head b{font:600 20px Poppins,system-ui,sans-serif}
+.cr .cr-eyebrow{color:#ff4438;font-weight:700;letter-spacing:.2em;text-transform:uppercase;font-size:11.5px}.cr .cr-eyebrow::before{content:"—— "}
+.cr .meta{color:#595963;margin-top:6px}.cr .box{background:#ffe9e7;border-left:3px solid #ff4438;border-radius:0 10px 10px 0;padding:14px 16px;white-space:pre-wrap}
+.cr table{width:100%;border-collapse:collapse}.cr td{padding:9px 4px;border-bottom:1px solid #f2f2f5;vertical-align:top;background:none;color:#0e0d1b}
+.cr .ok{color:#23784a;font-weight:700}.cr .issue{color:#c8291d;font-weight:700}.cr .na{color:#65656f}
+.cr .prob{border:1px solid #e8e8ec;border-left:3px solid #c8291d;border-radius:0 10px 10px 0;padding:10px 14px;margin:8px 0}
+.cr .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px}
+.cr figure{margin:0;break-inside:avoid}.cr figure img,.cr figure video{width:100%;border-radius:12px;display:block;background:#f2f1f8}
+.cr figcaption{font-size:13px;color:#595963;margin-top:6px}.cr .foot{margin-top:34px;padding-top:14px;border-top:1px solid #e8e8ec;color:#65656f;font-size:12.5px}
 @media print{.cr .grid{grid-template-columns:repeat(2,1fr)}}`;
 
   /* Builds the client report. src(item) returns the photo/video source to use (live URL or embedded data). */
-  function reportBody(v, src, skippedVideos = 0) {
+  function reportBody(v, src, skippedVideos = 0, logo = $('.brand-logo')?.src) {
     const m = member(v.memberId) || {};
     const { items, res } = checklistSummary(v);
     const media = v.media || [];
@@ -1260,8 +1278,8 @@
     const open = (v.problems || []).filter(p => p.status !== 'Resolved');
     const cap = (x) => `<figcaption>${esc(fmtDateTime(x.takenAt))}${x.caption ? ' · ' + esc(x.caption) : ''}</figcaption>`;
     return `<div class="cr">
-<div class="brand">${esc(ST().businessName)}</div>
-<h1>Property visit report</h1>
+<div class="cr-head">${logo ? `<img class="cr-logo" src="${esc(logo)}" alt="${esc(ST().businessName)}">` : `<b>${esc(ST().businessName)}</b>`}<span class="cr-eyebrow">Visit report</span></div>
+<h1>Property visit <em>report</em></h1>
 <div class="meta">${esc(m.propertyAddress || '')}${m.region ? ' · ' + esc(m.region) : ''}<br>
 ${esc(fmtDay(v.date))} ${v.date ? esc(v.date.slice(0, 4)) : ''}${v.arrivedAt ? ` · ${esc(v.arrivedAt)}${v.leftAt ? '–' + esc(v.leftAt) : ''}` : ''} · Owner: ${esc(m.name || '')}</div>
 <h2>Summary</h2><div class="box">${esc(v.summary || defaultSummary(v))}</div>
@@ -1286,7 +1304,7 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
     if (!v.summary) warn.push('no message to the owner (a default sentence will be used)');
     openModal({
       title: 'Client report', wide: true,
-      body: `${warn.length ? `<p class="small" style="margin:0 0 12px"><span class="pill s-in-progress">Check</span> ${esc(warn.join(' · '))}</p>` : ''}
+      body: `${warn.length ? `<p class="callout small" style="margin:0 0 14px"><b>Before you send:</b> ${esc(warn.join(' · '))}</p>` : ''}
         <style>${REPORT_CSS}</style>
         <div class="report-preview">${reportBody(v, mediaUrl)}</div>`,
       foot: `<button type="button" class="btn primary" id="crDownload">Download report file</button>
@@ -1307,7 +1325,8 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
     const m = member(v.memberId) || {};
     toast('Preparing report…');
     const data = {};
-    let videoBytes = 0, skipped = 0;
+    let videoBytes = 0, skipped = 0, logoData = '';
+    try { const l = $('.brand-logo'); if (l) logoData = await blobToDataURL(l.src); } catch { /* report falls back to the business name */ }
     for (const x of v.media || []) {
       try {
         if (x.type === 'video') {
@@ -1320,7 +1339,7 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
     }
     const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Visit report ${esc(v.date)} – ${esc(m.propertyAddress || m.name || '')}</title>
-<style>body{margin:0;background:#fff}${REPORT_CSS}</style></head><body>${reportBody(v, (x) => data[x.id], skipped)}</body></html>`;
+<style>body{margin:0;background:#fff}${REPORT_CSS}</style></head><body>${reportBody(v, (x) => data[x.id], skipped, logoData)}</body></html>`;
     const place = slug(m.propertyAddress || m.name || 'property').slice(0, 40);
     download(`estia-visit-${v.date}-${place}.html`, html, 'text/html');
   }
@@ -1545,13 +1564,13 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
   /* ---- sync status + Claude account storage ---- */
   const syncNote = $('#syncNote');
   const SYNC_TEXT = {
-    local: 'Saved in this browser. Back it up regularly from Settings.',
+    local: 'Saved in this browser',
     loading: 'Loading your data…',
     saving: 'Saving…',
     synced: API ? 'All changes saved' : 'Saved to your Claude account',
-    error: API ? 'Could not save. Check your internet connection; changes are kept on this device and saved when you reload.' : 'Could not save to your Claude account. Changes are kept in this browser; reload to retry.'
+    error: 'Not saved. Check your connection, then reload'
   };
-  const showSync = (st) => { syncNote.textContent = SYNC_TEXT[st] || ''; syncNote.className = 'sidebar-foot sync ' + st; };
+  const showSync = (st) => { syncNote.textContent = SYNC_TEXT[st] || ''; syncNote.className = 'sync ' + st; syncNote.title = st === 'error' ? 'Changes are kept on this device and saved again when you reload the page.' : ''; };
   S.onSyncStatus(showSync);
   showSync(S.syncStatus);
 

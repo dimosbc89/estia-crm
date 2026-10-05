@@ -10,4 +10,5 @@ html = html.replace('<script src="js/store.js"></script>', '<script>window.ESTIA
 (pub / 'index.html').write_text(html, encoding='utf-8')
 for f in ['css/styles.css', 'js/store.js', 'js/app.js']:
     shutil.copy(root / f, pub / f)
+shutil.copytree(root / 'assets', pub / 'assets')   # logo + icons (served without login, used on the sign-in page)
 print('wrote public/')
