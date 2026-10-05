@@ -34,7 +34,18 @@
     regions: ['Athens', 'Athens Riviera', 'Thessaloniki', 'Peloponnese', 'Kalamata & Costa Navarino', 'Halkidiki', 'Pelion', 'Evia', 'Islands', 'Other'],
     propertyTypes: ['Apartment', 'House', 'Villa', 'Multiple units'],
     visitFrequencies: ['Monthly', 'Quarterly', 'Once or twice a year', 'Rarely'],
-    partnerTracks: ['Trade partner', 'Professional partner', 'Referral / community partner']
+    partnerTracks: ['Trade partner', 'Professional partner', 'Referral / community partner'],
+    // "What every visit covers" on estiagreekhome.online
+    checklist: [
+      'Full interior walk-through',
+      'Rooms aired and ventilated',
+      'Leak, moisture and odour scan',
+      'Plumbing and drains tested',
+      'Balcony, terrace, external drains',
+      'Electric panel visual check',
+      'Indoor plants watered',
+      'Mail collected and forwarded'
+    ]
   };
 
   const COLLECTIONS = ['leads', 'members', 'visits', 'jobs', 'partners'];
@@ -133,7 +144,7 @@
   const DEFAULTS = {
     leads: () => ({ status: 'New', source: 'Website form', activity: [] }),
     members: () => ({ status: 'Onboarding', plan: 'Recommended', billing: 'Monthly', reportChannel: 'WhatsApp', startDate: new Date().toISOString().slice(0, 10) }),
-    visits: () => ({ status: 'Scheduled', issues: '' }),
+    visits: () => ({ status: 'Scheduled', issues: '', checklist: {}, problems: [], media: [] }),
     jobs: () => ({ status: 'Requested', price: 0, cost: 0, paid: false }),
     partners: () => ({ status: 'New', activity: [] })
   };
@@ -285,8 +296,15 @@
       const c = mem({ name: 'Claire Dubois', email: 'claire@example.com', livesIn: 'Lyon', propertyAddress: 'Stoupa', region: 'Kalamata & Costa Navarino', propertyType: 'House', audience: 'International owner', plan: 'Essential', startDate: `${m1}-03`, keysHeld: true });
       mem({ name: 'Peter Nikolaou', email: 'peter@example.com', livesIn: 'Boston', propertyAddress: 'Kalamaria, Thessaloniki', region: 'Thessaloniki', propertyType: 'Apartment', audience: 'Greek abroad', plan: 'Essential', status: 'Onboarding', startDate: `${m0}-15`, onboardingPaid: false });
 
-      const visit = (memberId, mk, day, status, issues = '') => db.visits.push({ id: uid(), createdAt: now(), memberId, month: mk, date: `${mk}-${String(day).padStart(2, '0')}`, status, issues,
-        reportSentAt: status === 'Report sent' ? `${mk}-${String(day).padStart(2, '0')}` : '' });
+      const visit = (memberId, mk, day, status, issues = '') => {
+        const done = status !== 'Scheduled';
+        db.visits.push({ id: uid(), createdAt: now(), memberId, month: mk, date: `${mk}-${String(day).padStart(2, '0')}`, status, issues,
+          reportSentAt: status === 'Report sent' ? `${mk}-${String(day).padStart(2, '0')}` : '',
+          arrivedAt: done ? '10:15' : '', leftAt: done ? '10:55' : '', humidity: done ? (issues ? 68 : 55) : '', temperature: done ? 21 : '',
+          checklist: done ? Object.fromEntries(db.settings.checklist.map(c => [c, { status: issues && /Leak/.test(c) ? 'issue' : 'ok' }])) : {},
+          problems: issues ? [{ id: uid(), text: issues, severity: 'Medium', action: 'Send a plumber this week', status: 'Open', at: now() }] : [],
+          media: [] });
+      };
       [m2, m1].forEach(mk => { visit(a.id, mk, 8, 'Report sent'); visit(a.id, mk, 22, 'Report sent', mk === m1 ? 'Small leak under kitchen sink' : ''); });
       [8, 15, 22, 28].forEach((d, i) => visit(b.id, m1, d, 'Report sent', i === 2 ? 'Pool pump noisy' : ''));
       visit(c.id, m1, 18, 'Report sent');

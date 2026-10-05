@@ -620,8 +620,8 @@
           <p class="muted" style="margin:6px 0 0">Owner: <b>${esc(m.name)}</b> · Property: <b>${esc(m.propertyAddress || '—')}</b>${m.region ? ` (${esc(m.region)})` : ''}<br>
           Plan: ${esc(m.plan)} · Member since ${fmtDate(m.startDate)}${m.insurer ? ` · Insurer: ${esc(m.insurer)}` : ''}</p></div>
         </div>
-        <div class="table-wrap" style="margin-top:14px">${visits.length ? `<table><thead><tr><th>#</th><th>Visit date</th><th>Status</th><th>Report sent</th><th>Findings</th></tr></thead>
-          <tbody>${visits.map((v, i) => `<tr><td>${i + 1}</td><td>${fmtDay(v.date)}</td><td>${esc(v.status === 'Skipped' ? 'Skipped' : 'Visited')}</td><td>${v.reportSentAt ? fmtDate(v.reportSentAt) : '—'}</td><td>${esc(v.issues || 'All clear')}${v.notes ? `<div class="muted small">${esc(v.notes)}</div>` : ''}</td></tr>`).join('')}</tbody></table>`
+        <div class="table-wrap" style="margin-top:14px">${visits.length ? `<table><thead><tr><th>#</th><th>Visit date</th><th>Status</th><th>Report sent</th><th>Time on site</th><th class="num">Photos</th><th>Findings</th></tr></thead>
+          <tbody>${visits.map((v, i) => `<tr><td>${i + 1}</td><td>${fmtDay(v.date)}</td><td>${esc(v.status === 'Skipped' ? 'Skipped' : 'Visited')}</td><td>${v.reportSentAt ? fmtDate(v.reportSentAt) : '—'}</td><td>${v.arrivedAt ? esc(v.arrivedAt + (v.leftAt ? '–' + v.leftAt : '')) : '—'}</td><td class="num">${(v.media || []).length || '—'}</td><td>${esc(v.issues || 'All clear')}${v.notes ? `<div class="muted small">${esc(v.notes)}</div>` : ''}</td></tr>`).join('')}</tbody></table>`
           : '<div class="empty">No completed visits in this year.</div>'}</div>
         <p class="muted small" style="margin-top:12px">Generated ${fmtDate(todayISO())}. Timestamped photo reports for each visit are available on request.</p>
       </section>`;
@@ -661,7 +661,7 @@
             <td class="muted">${esc(mm?.propertyAddress || mm?.region || '')}</td>
             <td data-stop><select class="pill-select s-${slug(v.status)}" data-set-status="visits:${v.id}">${options(S.VISIT_STATUSES, v.status)}</select></td>
             <td>${v.issues ? `<span class="pill s-in-progress">${esc(v.issues)}</span>` : '<span class="muted">—</span>'}</td>
-            <td data-stop class="num">${v.status === 'Scheduled' ? `<button class="btn sm" data-visit-step="${v.id}">Mark visited</button>` : v.status === 'Visited' ? `<button class="btn sm ${repLate ? 'primary' : ''}" data-visit-step="${v.id}">Report sent</button>` : ''}</td>
+            <td data-stop class="num">${v.status === 'Scheduled' ? `<button class="btn sm" data-open="visit:${v.id}">Start report</button>` : v.status === 'Visited' ? `<button class="btn sm ${repLate ? 'primary' : ''}" data-visit-step="${v.id}">Report sent</button>` : ''}${(v.media || []).length ? ` <span class="muted small">📷 ${(v.media || []).length}</span>` : ''}</td>
           </tr>`; }).join('')}</tbody></table>`
           : `<div class="empty">No visits for ${esc(monthLabel(mk))}. ${active.length ? 'Use “Generate visits from plans” to create them for all active members.' : 'Add members first.'}</div>`}</div>
       </section>
@@ -688,15 +688,15 @@
         ${field('date', 'Visit date *', v.date || todayISO(), 'date', 'required')}
         ${field('status', 'Status', v.status || 'Scheduled', S.VISIT_STATUSES)}
         ${field('reportSentAt', 'Report sent on', v.reportSentAt, 'date')}
-        ${field('issues', 'Issues found (leave empty if all clear)', v.issues, 'text', 'placeholder="e.g. damp in bathroom ceiling"')}
         ${field('notes', 'Visit notes', v.notes, 'textarea')}
       </div>`,
       foot: isNew ? '' : `<button type="button" class="btn danger" id="del">Delete</button>${v.issues ? `<button type="button" class="btn" id="mkJob">Create job from issue</button>` : ''}`,
       onSave: (d) => {
         if (!d.memberId || !d.date) { toast('Choose a member and date'); return false; }
         if (d.status === 'Report sent' && !d.reportSentAt) d.reportSentAt = todayISO();
-        S.save('visits', { ...d, id: v.id, month: d.date.slice(0, 7) });
+        const saved = S.save('visits', { ...d, id: v.id, month: d.date.slice(0, 7) });
         toast('Saved');
+        if (!v.id) setTimeout(() => openVisit(saved.id), 0);
       },
       bind: (root) => {
         $('#del', root)?.addEventListener('click', () => confirmBox('Delete this visit?', () => { S.remove('visits', v.id); toast('Deleted'); }));
@@ -905,6 +905,7 @@
             <label class="field"><span>Request sources</span><textarea name="sources" rows="8">${lines(st.sources)}</textarea></label>
             <label class="field"><span>Regions</span><textarea name="regions" rows="8">${lines(st.regions)}</textarea></label>
             <label class="field"><span>Owner types</span><textarea name="audiences" rows="8">${lines(st.audiences)}</textarea></label>
+            <label class="field full"><span>Visit checklist</span><textarea name="checklist" rows="9">${lines(st.checklist)}</textarea></label>
           </div>
         </section>
       </form>
@@ -924,18 +925,19 @@
   };
 
   /* ================= render & routing ================= */
-  const TITLES = { dashboard: 'Dashboard', leads: 'Requests', members: 'Members', month: 'Monthly work', partners: 'Partners', reports: 'Reports', settings: 'Settings', visitlog: 'Visit log' };
+  const TITLES = { visit: 'Visit report', dashboard: 'Dashboard', leads: 'Requests', members: 'Members', month: 'Monthly work', partners: 'Partners', reports: 'Reports', settings: 'Settings', visitlog: 'Visit log' };
 
   function render() {
     const view = views[state.view] ? state.view : 'dashboard';
     main.innerHTML = views[view]();
-    $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view || (view === 'visitlog' && a.dataset.view === 'members')));
+    $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === view || (view === 'visitlog' && a.dataset.view === 'members') || (view === 'visit' && a.dataset.view === 'month')));
     const n = S.all('leads').filter(l => l.status === 'New').length;
     $('#newBadge').hidden = !n; $('#newBadge').textContent = n;
     const pn = S.all('partners').filter(p => p.status === 'New').length;
     $('#partnerBadge').hidden = !pn; $('#partnerBadge').textContent = pn;
     $('#brandName').textContent = ST().businessName || 'Estia CRM';
     document.title = `${TITLES[view]} · Estia CRM`;
+    bindVisitView();
   }
 
   function rerenderKeepingFocus(input) {
@@ -990,10 +992,391 @@
   const openers = {
     lead: (id) => leadForm(S.get('leads', id)),
     member: (id) => memberForm(member(id)),
-    visit: (id) => visitForm(S.get('visits', id)),
+    visit: (id) => openVisit(id),
     job: (id) => jobForm(S.get('jobs', id)),
     partner: (id) => partnerForm(S.get('partners', id))
   };
+
+  /* ================= visit report (filled in on site, on a phone) ================= */
+  const CHECK = { ok: 'OK', issue: 'Issue', na: 'N/A' };
+  const SEVERITIES = ['Low', 'Medium', 'Urgent'];
+  let assetsCap = null;                      // set at boot inside a Claude artifact (writers only)
+  const mediaUrl = (m) => '/_blob/' + m.id;
+  const visitTitle = (v) => `${memberName(v.memberId)} · ${fmtDay(v.date)}`;
+  const timeNow = () => new Date().toTimeString().slice(0, 5);
+
+  function openVisit(id) {
+    state.visitId = id;
+    if (location.hash === '#visit') render(); else location.hash = '#visit';
+  }
+
+  /* Keep the plain-text issue summary (used by dashboard, reports, visit log) in step with the problem list. */
+  function saveVisit(v, patch) {
+    const next = { ...v, ...patch };
+    if ('problems' in patch || (v.problems || []).length) {
+      patch.issues = (next.problems || []).filter(p => p.status !== 'Resolved').map(p => p.text).join('; ');
+    }
+    S.save('visits', { id: v.id, ...patch });
+  }
+
+  function checklistSummary(v) {
+    const items = ST().checklist || [];
+    const res = v.checklist || {};
+    const done = items.filter(i => res[i]?.status).length;
+    const issues = items.filter(i => res[i]?.status === 'issue').length;
+    return { items, res, done, issues };
+  }
+
+  views.visit = () => {
+    const v = S.get('visits', state.visitId);
+    if (!v) return `<div class="empty">Choose a visit from <a href="#month">Monthly work</a>.</div>`;
+    const m = member(v.memberId) || {};
+    const { items, res, done } = checklistSummary(v);
+    const problems = v.problems || [];
+    const media = v.media || [];
+    const canUpload = !!assetsCap;
+    const probOpts = (sel) => `<option value="">— not linked —</option>` + problems.map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.text.slice(0, 40))}</option>`).join('');
+    return `
+      <div class="page-head">
+        <div><h1>Visit report</h1><div class="sub">${esc(m.name || '—')} · ${esc(m.propertyAddress || m.region || '')}</div></div>
+        <div class="row"><a class="btn" href="#month">← Monthly work</a><button class="btn" data-act="edit-visit">Change date / member</button></div>
+      </div>
+
+      <section class="card card-pad vr-section">
+        <div class="vr-grid">
+          <label class="field"><span>Visit date</span><input type="date" id="vr-date" data-vr="date" value="${esc(v.date)}"></label>
+          <label class="field"><span>Status</span><select id="vr-status" data-vr="status">${options(S.VISIT_STATUSES, v.status)}</select></label>
+          <label class="field"><span>Arrived</span><span class="row nowrap"><input type="time" id="vr-arrived" data-vr="arrivedAt" value="${esc(v.arrivedAt || '')}"><button class="btn sm" data-vr-now="arrivedAt">Now</button></span></label>
+          <label class="field"><span>Left</span><span class="row nowrap"><input type="time" id="vr-left" data-vr="leftAt" value="${esc(v.leftAt || '')}"><button class="btn sm" data-vr-now="leftAt">Now</button></span></label>
+          <label class="field"><span>Indoor humidity (%RH)</span><input type="number" id="vr-humidity" data-vr="humidity" min="0" max="100" step="1" inputmode="numeric" value="${esc(v.humidity ?? '')}" placeholder="e.g. 62"></label>
+          <label class="field"><span>Indoor temperature (°C)</span><input type="number" id="vr-temp" data-vr="temperature" step="0.5" inputmode="decimal" value="${esc(v.temperature ?? '')}" placeholder="e.g. 19"></label>
+        </div>
+        ${num(v.humidity) >= 65 ? `<p class="small" style="margin:10px 0 0"><span class="pill s-in-progress">High humidity</span> Above 65 %RH, mould risk rises. Consider ventilating longer or a dehumidifier.</p>` : ''}
+      </section>
+
+      <section class="card vr-section">
+        <div class="card-head"><h2>Checklist</h2><span class="muted small">${done}/${items.length} checked</span></div>
+        <ul class="list checklist">${items.map((item, i) => { const r = res[item] || {}; return `
+          <li>
+            <div class="ck-label">${esc(item)}${r.note ? `<div class="muted small">${esc(r.note)}</div>` : ''}</div>
+            <div class="seg" role="group" aria-label="${esc(item)}">${Object.entries(CHECK).map(([k, l]) => `<button type="button" class="seg-btn ${r.status === k ? 'on ' + k : ''}" data-check="${i}" data-val="${k}" aria-pressed="${r.status === k}">${l}</button>`).join('')}</div>
+          </li>`; }).join('')}</ul>
+        <div class="card-pad" style="padding-top:0"><button class="btn sm" data-act="check-all-ok">Mark unchecked items OK</button></div>
+      </section>
+
+      <section class="card vr-section">
+        <div class="card-head"><h2>Problems found</h2><span class="muted small">${problems.filter(p => p.status !== 'Resolved').length} open</span></div>
+        ${problems.length ? `<ul class="list">${problems.map(p => { const pm = media.filter(x => x.problemId === p.id); return `
+          <li class="problem">
+            <div style="min-width:0;flex:1">
+              <div class="row"><span class="pill ${p.severity === 'Urgent' ? 's-overdue' : p.severity === 'Medium' ? 's-in-progress' : 's-muted'}">${esc(p.severity)}</span>${p.status === 'Resolved' ? pill('Resolved', ' s-done') : ''}<b>${esc(p.text)}</b></div>
+              ${p.action ? `<div class="muted small">Recommended: ${esc(p.action)}</div>` : ''}
+              ${pm.length ? `<div class="thumbs-mini">${pm.map(x => x.type === 'image' ? `<img src="${mediaUrl(x)}" alt="">` : `<span class="pill s-muted">▶ video</span>`).join('')}</div>` : ''}
+            </div>
+            <div class="row" style="justify-content:flex-end">
+              <button class="btn sm" data-prob-resolve="${p.id}">${p.status === 'Resolved' ? 'Reopen' : 'Resolved'}</button>
+              <button class="btn sm" data-prob-job="${p.id}">Create job</button>
+              <button class="btn sm ghost" data-prob-del="${p.id}" aria-label="Remove problem">✕</button>
+            </div>
+          </li>`; }).join('')}</ul>` : '<p class="muted small card-pad" style="margin:0">No problems. Add one below if you find something.</p>'}
+        <div class="card-pad add-problem">
+          <input type="text" id="probText" placeholder="What did you find? e.g. damp patch on bathroom ceiling">
+          <select id="probSeverity">${options(SEVERITIES, 'Medium')}</select>
+          <input type="text" id="probAction" placeholder="Recommended action (optional)">
+          <button class="btn primary" data-act="add-problem">Add problem</button>
+        </div>
+      </section>
+
+      <section class="card vr-section">
+        <div class="card-head"><h2>Photos & videos</h2><span class="muted small">${media.filter(x => x.type === 'image').length} photos · ${media.filter(x => x.type === 'video').length} videos</span></div>
+        <div class="card-pad">
+          ${canUpload ? `<label class="btn primary upload-btn"><input type="file" id="mediaInput" accept="image/*,video/mp4,video/webm,video/quicktime" multiple hidden>＋ Add photos / videos</label>
+            <p class="muted small" style="margin:8px 0 0">Photos are resized and stamped with the date and time they were taken. Videos: MP4 or MOV, up to 20 MB each (about 15–20 seconds).</p>
+            <div id="uploadStatus" class="small" aria-live="polite"></div>`
+          : `<p class="muted small" style="margin:0">${IN_ARTIFACT ? 'Only people who can edit this page can add photos.' : 'Photos and videos can be added in the Claude page version of the CRM.'}</p>`}
+          ${media.length ? `<div class="media-grid">${media.map(x => `
+            <figure class="media-item">
+              ${x.type === 'image' ? `<a href="${mediaUrl(x)}" target="_blank" rel="noopener"><img src="${mediaUrl(x)}" alt="${esc(x.caption || 'Visit photo')}" loading="lazy"></a>` : `<video src="${mediaUrl(x)}" controls preload="metadata" playsinline></video>`}
+              <figcaption>
+                <span class="muted small">${fmtDateTime(x.takenAt)}</span>
+                <input type="text" value="${esc(x.caption || '')}" placeholder="Caption" data-media-caption="${x.id}" aria-label="Caption">
+                <span class="row nowrap"><select data-media-problem="${x.id}" aria-label="Linked problem">${probOpts(x.problemId)}</select>
+                ${canUpload ? `<button class="btn sm ghost danger" data-media-del="${x.id}" aria-label="Delete">✕</button>` : ''}</span>
+              </figcaption>
+            </figure>`).join('')}</div>` : ''}
+        </div>
+      </section>
+
+      <section class="card card-pad vr-section">
+        <h2 style="margin-bottom:10px">Report</h2>
+        <div class="fields">
+          <label class="field full"><span>Message to the owner</span><textarea id="vr-summary" data-vr="summary" rows="4" placeholder="${esc(defaultSummary(v))}">${esc(v.summary || '')}</textarea></label>
+          <label class="field full"><span>Internal notes (not sent)</span><textarea id="vr-notes" data-vr="notes" rows="2">${esc(v.notes || '')}</textarea></label>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn" data-act="copy-report-text">Copy WhatsApp text</button>
+          ${m.phone ? `<a class="btn" href="${esc(waLink(m.phone))}?text=${encodeURIComponent(reportText(v))}" target="_blank" rel="noopener">Open WhatsApp chat</a>` : ''}
+          <button class="btn" data-act="download-visit-report">Download report with photos</button>
+          ${v.status !== 'Report sent' ? `<button class="btn primary" data-act="mark-report-sent">Mark report sent</button>` : `<span class="pill s-report-sent">Report sent ${fmtDate(v.reportSentAt)}</span>`}
+        </div>
+        ${m.email ? `<p class="muted small" style="margin:10px 0 0">Owner email: <span class="selectable">${esc(m.email)}</span> · reports go by ${esc(m.reportChannel || 'WhatsApp')}</p>` : ''}
+      </section>`;
+  };
+
+  function defaultSummary(v) {
+    const { issues } = checklistSummary(v);
+    const open = (v.problems || []).filter(p => p.status !== 'Resolved');
+    return open.length || issues ? `We found ${open.length || issues} thing${(open.length || issues) === 1 ? '' : 's'} that need attention. Details and photos below.` : 'All clear. Your home is aired, dry and secure.';
+  }
+
+  function reportText(v) {
+    const m = member(v.memberId) || {};
+    const { items, res } = checklistSummary(v);
+    const open = (v.problems || []).filter(p => p.status !== 'Resolved');
+    const lines = [
+      `${ST().businessName} · Visit report`,
+      `${m.propertyAddress || m.region || ''} · ${fmtDay(v.date)}${v.arrivedAt ? ` · ${v.arrivedAt}${v.leftAt ? '–' + v.leftAt : ''}` : ''}`,
+      '',
+      v.summary || defaultSummary(v),
+      ''
+    ];
+    if (v.humidity || v.temperature) lines.push(`Indoor: ${v.humidity ? v.humidity + ' %RH' : ''}${v.humidity && v.temperature ? ', ' : ''}${v.temperature ? v.temperature + ' °C' : ''}`);
+    const ok = items.filter(i => res[i]?.status === 'ok');
+    if (ok.length) lines.push(`✅ Checked OK: ${ok.join(', ')}`);
+    open.forEach(p => lines.push(`⚠️ ${p.severity}: ${p.text}${p.action ? ' — recommended: ' + p.action : ''}`));
+    const n = (v.media || []).length;
+    if (n) lines.push('', `📷 ${n} timestamped photo${n === 1 ? '' : 's'}/video${n === 1 ? '' : 's'} attached.`);
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  /* Resize to max 2000px, JPEG, and stamp the capture time in the corner. */
+  async function preparePhoto(file) {
+    const taken = new Date(file.lastModified || Date.now());
+    let bitmap;
+    try { bitmap = await createImageBitmap(file); }
+    catch {
+      bitmap = await new Promise((ok, bad) => { const img = new Image(); img.onload = () => ok(img); img.onerror = bad; img.src = URL.createObjectURL(file); });
+    }
+    const max = 2000, w0 = bitmap.width, h0 = bitmap.height, k = Math.min(1, max / Math.max(w0, h0));
+    const w = Math.round(w0 * k), h = Math.round(h0 * k);
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    g.drawImage(bitmap, 0, 0, w, h);
+    const stamp = taken.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const fs = Math.max(14, Math.round(w / 45));
+    g.font = `600 ${fs}px system-ui, sans-serif`;
+    const tw = g.measureText(stamp).width, pad = fs * 0.5;
+    g.fillStyle = 'rgba(0,0,0,.55)';
+    g.fillRect(w - tw - pad * 3, h - fs - pad * 3, tw + pad * 2, fs + pad * 2);
+    g.fillStyle = '#fff';
+    g.textBaseline = 'top';
+    g.fillText(stamp, w - tw - pad * 2, h - fs - pad * 2);
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.82));
+    return { blob, takenAt: taken.toISOString() };
+  }
+
+  const UPLOAD_ERRORS = {
+    too_large: 'is over 20 MB. Record a shorter clip (about 15 seconds) or send it by WhatsApp instead.',
+    unsupported_type: 'is a file type that can’t be stored. Use JPG/PNG photos or MP4 videos.',
+    quota_or_state: 'could not be stored: the photo storage is full.',
+    rate_limited: 'was not uploaded: too many uploads at once. Wait a moment and try again.',
+    upstream_auth: 'was not uploaded: please reload the page and sign in again.'
+  };
+
+  async function addMedia(files) {
+    const v = S.get('visits', state.visitId);
+    if (!v || !assetsCap) return;
+    const status = $('#uploadStatus');
+    const list = [...files];
+    const failures = [];
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      if (status) status.textContent = `Uploading ${i + 1} of ${list.length}…`;
+      try {
+        const isVideo = /^video\//.test(f.type) || /\.(mov|mp4|webm)$/i.test(f.name);
+        let blob = f, type, takenAt = new Date(f.lastModified || Date.now()).toISOString();
+        if (isVideo) {
+          type = /webm/.test(f.type) ? 'video/webm' : 'video/mp4';   // iPhone .mov (H.264/HEVC) is stored as MP4
+          if (f.size > 20 * 1024 * 1024) throw { code: 'too_large' };
+        } else {
+          ({ blob, takenAt } = await preparePhoto(f));
+          type = 'image/jpeg';
+        }
+        let res;
+        try { res = await assetsCap.upload(blob, { type }); }
+        catch (e) { if (e?.code === 'store_unavailable') { await new Promise(r => setTimeout(r, 1500)); res = await assetsCap.upload(blob, { type }); } else throw e; }
+        const cur = S.get('visits', v.id);
+        saveVisit(cur, { media: [...(cur.media || []), { id: res.id, type: isVideo ? 'video' : 'image', name: f.name, takenAt, caption: '' }] });
+      } catch (e) {
+        console.error(e);
+        failures.push(`${f.name} ${UPLOAD_ERRORS[e?.code] || 'could not be uploaded.'}`);
+      }
+    }
+    render();
+    const st = $('#uploadStatus');
+    if (st) st.textContent = failures.join(' ');
+    toast(failures.length ? `${list.length - failures.length} of ${list.length} uploaded` : `${list.length} file${list.length === 1 ? '' : 's'} added`);
+  }
+
+  async function blobToDataURL(url) {
+    const b = await (await fetch(url)).blob();
+    return new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); });
+  }
+
+  /* A standalone report file for the owner, with photos embedded so it opens anywhere. */
+  async function downloadVisitReport() {
+    const v = S.get('visits', state.visitId);
+    const m = member(v.memberId) || {};
+    toast('Preparing report…');
+    const { items, res } = checklistSummary(v);
+    const media = v.media || [];
+    const photos = [];
+    for (const x of media.filter(x => x.type === 'image')) {
+      try { photos.push({ ...x, src: await blobToDataURL(mediaUrl(x)) }); } catch { /* missing asset: skip */ }
+    }
+    const videos = media.filter(x => x.type === 'video').length;
+    const open = (v.problems || []).filter(p => p.status !== 'Resolved');
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visit report ${esc(v.date)} – ${esc(m.propertyAddress || m.name || '')}</title>
+<style>
+body{font:15px/1.5 Manrope,system-ui,-apple-system,Segoe UI,sans-serif;color:#0e0d1b;max-width:820px;margin:0 auto;padding:28px 18px;background:#fff}
+h1{font:600 22px Poppins,system-ui,sans-serif;margin:0}h2{font:600 16px Poppins,system-ui,sans-serif;margin:26px 0 10px}
+.brand{color:#c8291d;font-weight:700;letter-spacing:.04em;text-transform:uppercase;font-size:12px}
+.meta{color:#595963;margin-top:4px}.box{background:#f7f7f9;border:1px solid #e8e8ec;border-radius:10px;padding:12px 14px;white-space:pre-wrap}
+table{width:100%;border-collapse:collapse}td{padding:7px 4px;border-bottom:1px solid #e8e8ec;vertical-align:top}
+.ok{color:#2e7d4f;font-weight:700}.issue{color:#b23b3b;font-weight:700}.na{color:#65656f}
+.prob{border-left:4px solid #c8291d;padding:6px 12px;margin:8px 0;background:#fff7f6}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+figure{margin:0}figure img{width:100%;border-radius:8px;display:block}figcaption{font-size:13px;color:#595963;margin-top:4px}
+.foot{margin-top:30px;color:#65656f;font-size:12px}
+@media print{.grid{grid-template-columns:repeat(2,1fr)}figure{break-inside:avoid}}
+</style></head><body>
+<div class="brand">${esc(ST().businessName)}</div>
+<h1>Property visit report</h1>
+<div class="meta">${esc(m.propertyAddress || '')}${m.region ? ' · ' + esc(m.region) : ''}<br>
+${esc(fmtDay(v.date))} ${v.date ? esc(v.date.slice(0, 4)) : ''}${v.arrivedAt ? ` · ${esc(v.arrivedAt)}${v.leftAt ? '–' + esc(v.leftAt) : ''}` : ''} · Owner: ${esc(m.name || '')}</div>
+<h2>Summary</h2><div class="box">${esc(v.summary || defaultSummary(v))}</div>
+${v.humidity || v.temperature ? `<p>Indoor conditions: ${v.humidity ? `<b>${esc(v.humidity)} %RH</b>` : ''}${v.humidity && v.temperature ? ' · ' : ''}${v.temperature ? `<b>${esc(v.temperature)} °C</b>` : ''}</p>` : ''}
+${open.length ? `<h2>Needs attention</h2>${open.map(p => `<div class="prob"><b>${esc(p.severity)}:</b> ${esc(p.text)}${p.action ? `<br><span class="meta">Recommended: ${esc(p.action)}</span>` : ''}</div>`).join('')}` : ''}
+<h2>Checklist</h2><table>${items.map(i => { const r = res[i] || {}; return `<tr><td>${esc(i)}${r.note ? `<br><span class="meta">${esc(r.note)}</span>` : ''}</td><td class="${r.status || 'na'}" style="text-align:right;white-space:nowrap">${r.status ? CHECK[r.status] : '—'}</td></tr>`; }).join('')}</table>
+${photos.length ? `<h2>Photos</h2><div class="grid">${photos.map(x => `<figure><img src="${x.src}" alt=""><figcaption>${esc(fmtDateTime(x.takenAt))}${x.caption ? ' · ' + esc(x.caption) : ''}</figcaption></figure>`).join('')}</div>` : ''}
+${videos ? `<p class="meta">${videos} video${videos === 1 ? '' : 's'} recorded on this visit, sent separately.</p>` : ''}
+<p class="foot">Report prepared ${esc(fmtDate(todayISO()))}. Photos are timestamped at capture.</p>
+</body></html>`;
+    const place = slug(m.propertyAddress || m.name || 'property').slice(0, 40);
+    download(`estia-visit-${v.date}-${place}.html`, html, 'text/html');
+  }
+
+  function bindVisitView() {
+    if (state.view !== 'visit') return;
+    const v = S.get('visits', state.visitId);
+    if (!v) return;
+    $('#mediaInput')?.addEventListener('change', (e) => { if (e.target.files.length) addMedia(e.target.files); });
+  }
+
+  // Field edits on the visit page save immediately.
+  document.addEventListener('change', (e) => {
+    const t = e.target;
+    if (state.view !== 'visit') return;
+    const v = S.get('visits', state.visitId);
+    if (!v) return;
+    if (t.dataset.vr) {
+      const key = t.dataset.vr, patch = { [key]: t.value };
+      if (key === 'date' && t.value) patch.month = t.value.slice(0, 7);
+      if (key === 'status' && t.value === 'Report sent' && !v.reportSentAt) patch.reportSentAt = todayISO();
+      saveVisit(v, patch);
+      if (['status', 'humidity', 'date'].includes(key)) render();
+      else toast('Saved');
+    }
+    if (t.dataset.mediaCaption) {
+      saveVisit(v, { media: (v.media || []).map(x => x.id === t.dataset.mediaCaption ? { ...x, caption: t.value } : x) });
+      toast('Saved');
+    }
+    if (t.dataset.mediaProblem) {
+      saveVisit(v, { media: (v.media || []).map(x => x.id === t.dataset.mediaProblem ? { ...x, problemId: t.value } : x) });
+      render();
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (state.view !== 'visit') return;
+    const v = S.get('visits', state.visitId);
+    if (!v) return;
+    const t = e.target;
+    const now = t.closest('[data-vr-now]');
+    if (now) {
+      e.preventDefault();
+      const patch = { [now.dataset.vrNow]: timeNow() };
+      if (now.dataset.vrNow === 'arrivedAt' && v.status === 'Scheduled') patch.status = 'Visited';
+      saveVisit(v, patch); render(); return;
+    }
+    const ck = t.closest('[data-check]');
+    if (ck) {
+      const item = ST().checklist[+ck.dataset.check];
+      const cur = { ...(v.checklist || {}) };
+      const prev = cur[item] || {};
+      cur[item] = { ...prev, status: prev.status === ck.dataset.val ? '' : ck.dataset.val };
+      const patch = { checklist: cur };
+      if (v.status === 'Scheduled') patch.status = 'Visited';
+      saveVisit(v, patch); render();
+      if (ck.dataset.val === 'issue' && cur[item].status === 'issue') {
+        const inp = $('#probText'); inp.value = item + ': '; inp.focus(); inp.scrollIntoView({ block: 'center' });
+      }
+      return;
+    }
+    const res = t.closest('[data-prob-resolve]');
+    if (res) { saveVisit(v, { problems: v.problems.map(p => p.id === res.dataset.probResolve ? { ...p, status: p.status === 'Resolved' ? 'Open' : 'Resolved' } : p) }); render(); return; }
+    const del = t.closest('[data-prob-del]');
+    if (del) {
+      confirmBox('Remove this problem?', () => saveVisit(v, {
+        problems: v.problems.filter(p => p.id !== del.dataset.probDel),
+        media: (v.media || []).map(x => x.problemId === del.dataset.probDel ? { ...x, problemId: '' } : x)
+      }), 'Remove');
+      return;
+    }
+    const job = t.closest('[data-prob-job]');
+    if (job) {
+      const p = v.problems.find(x => x.id === job.dataset.probJob);
+      jobForm({ memberId: v.memberId, month: S.monthKey(), title: p.text, notes: p.action || '', service: 'Maintenance & Oversight', visitId: v.id });
+      return;
+    }
+    const md = t.closest('[data-media-del]');
+    if (md) {
+      confirmBox('Delete this photo/video permanently?', async () => {
+        try { await assetsCap?.delete(md.dataset.mediaDel); } catch (err) { console.error(err); }
+        const cur = S.get('visits', v.id);
+        saveVisit(cur, { media: (cur.media || []).filter(x => x.id !== md.dataset.mediaDel) });
+        render();
+      });
+    }
+  });
+
+  Object.assign(actions, {
+    'edit-visit': () => visitForm(S.get('visits', state.visitId)),
+    'check-all-ok': () => {
+      const v = S.get('visits', state.visitId);
+      const cur = { ...(v.checklist || {}) };
+      ST().checklist.forEach(i => { if (!cur[i]?.status) cur[i] = { ...(cur[i] || {}), status: 'ok' }; });
+      saveVisit(v, { checklist: cur, status: v.status === 'Scheduled' ? 'Visited' : v.status }); render();
+    },
+    'add-problem': () => {
+      const v = S.get('visits', state.visitId);
+      const text = $('#probText').value.trim();
+      if (!text) { toast('Describe the problem first'); $('#probText').focus(); return; }
+      saveVisit(v, { problems: [...(v.problems || []), { id: S.uid(), text, severity: $('#probSeverity').value, action: $('#probAction').value.trim(), status: 'Open', at: S.now() }],
+        status: v.status === 'Scheduled' ? 'Visited' : v.status });
+      render(); toast('Problem added');
+    },
+    'copy-report-text': async () => {
+      const text = reportText(S.get('visits', state.visitId));
+      try { await navigator.clipboard.writeText(text); toast('Copied. Paste it into WhatsApp or email'); }
+      catch {
+        openModal({ title: 'Copy this text', body: `<textarea id="copyBox" rows="12" style="width:100%">${esc(text)}</textarea>`, bind: (r) => { const b = $('#copyBox', r); b.focus(); b.select(); } });
+      }
+    },
+    'download-visit-report': downloadVisitReport,
+    'mark-report-sent': () => { const v = S.get('visits', state.visitId); saveVisit(v, { status: 'Report sent', reportSentAt: todayISO() }); render(); toast('Report marked as sent'); }
+  });
 
   document.addEventListener('click', (e) => {
     const t = e.target;
@@ -1017,8 +1400,8 @@
       else S.save('visits', { id: v.id, status: 'Report sent', reportSentAt: todayISO() });
       render(); return;
     }
-    if (t.closest('[data-stop]')) return;
     const op = t.closest('[data-open]');
+    if (t.closest('[data-stop]') && !(op && op.closest('[data-stop]'))) return;
     if (op) { e.preventDefault(); const [kind, id] = op.dataset.open.split(':'); openers[kind]?.(id); }
   });
 
@@ -1061,7 +1444,7 @@
     S.updateSettings({
       businessName: d.businessName.trim() || 'Estia Greek Home', currency, vatRate: num(d.vatRate), onboardingFee: num(d.onboardingFee),
       monthlyRevenueTarget: num(d.monthlyRevenueTarget), plans,
-      services: lines(d.services), sources: lines(d.sources), regions: lines(d.regions), audiences: lines(d.audiences)
+      services: lines(d.services), sources: lines(d.sources), regions: lines(d.regions), audiences: lines(d.audiences), checklist: lines(d.checklist)
     });
     render(); toast('Settings saved');
   });
@@ -1092,8 +1475,10 @@
 
   if (IN_ARTIFACT) {
     (async () => {
-      const [dbCap, userCap, dl] = await Promise.all([window.claude.use('db'), window.claude.use('user'), window.claude.use('downloads')]);
+      const [dbCap, userCap, dl, assets] = await Promise.all(['db', 'user', 'downloads', 'assets'].map(n => window.claude.use(n)));
       downloadsCap = dl;
+      assetsCap = assets;
+      if (state.view === 'visit') render();
       const uid = userCap ? await userCap.id() : null;
       if (!dbCap || !uid) { showSync('local'); return; }
       // Each person's CRM lives in their own private subtree: nobody else can read it.

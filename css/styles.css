@@ -263,6 +263,39 @@ dialog::backdrop { background: rgba(15, 20, 26, .45); }
   .monthnav .label { min-width: 0; flex: 1; }
 }
 
+/* visit report */
+.vr-section { margin-bottom: 14px; }
+.vr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px 14px; }
+.vr-grid .field input, .vr-grid .field select { width: 100%; }
+.nowrap { flex-wrap: nowrap; }
+.nowrap input { flex: 1; min-width: 0; }
+.checklist li { gap: 12px; flex-wrap: wrap; }
+.ck-label { flex: 1; min-width: 180px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex: none; }
+.seg-btn { border: 0; border-right: 1px solid var(--line); background: var(--surface); padding: 8px 14px; cursor: pointer; font-weight: 600; font-size: 13px; color: var(--ink-2); min-width: 54px; }
+.seg-btn:last-child { border-right: 0; }
+.seg-btn.on.ok { background: var(--good-bg); color: var(--good); }
+.seg-btn.on.issue { background: var(--bad-bg); color: var(--bad); }
+.seg-btn.on.na { background: var(--muted-bg); color: var(--ink); }
+.problem { align-items: flex-start; flex-wrap: wrap; }
+.problem .row b { overflow-wrap: anywhere; }
+.thumbs-mini { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.thumbs-mini img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; }
+.add-problem { display: grid; grid-template-columns: 2fr 120px 2fr auto; gap: 8px; border-top: 1px solid var(--line); }
+.upload-btn { cursor: pointer; padding: 10px 16px; }
+.media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-top: 14px; }
+.media-item { margin: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface-2); display: flex; flex-direction: column; }
+.media-item img, .media-item video { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--muted-bg); max-width: 100%; }
+.media-item figcaption { padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.media-item figcaption input, .media-item figcaption select { width: 100%; min-width: 0; }
+.selectable { user-select: all; }
+#uploadStatus { margin-top: 8px; color: var(--ink-2); }
+.problem > div:first-child { flex: 1 1 260px; }
+@media (max-width: 900px) {
+  .add-problem { grid-template-columns: 1fr; }
+  .seg-btn { padding: 10px 14px; }
+}
+
 /* standalone exported page (Download for printing) */
 body.printable { display: block; padding: 24px; }
 body.printable .no-print { display: none !important; }
