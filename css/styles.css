@@ -296,6 +296,10 @@ dialog::backdrop { background: rgba(15, 20, 26, .45); }
   .seg-btn { padding: 10px 14px; }
 }
 
+/* client report preview inside the app */
+.report-preview { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #fff; }
+.report-preview .cr { padding: 20px 16px; }
+
 /* standalone exported page (Download for printing) */
 body.printable { display: block; padding: 24px; }
 body.printable .no-print { display: none !important; }

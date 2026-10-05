@@ -315,7 +315,8 @@
         <div class="sub">${esc(ST().businessName)} · ${esc(monthLabel(mk))}</div></div>
         <div class="row">
           <button class="btn" data-act="paste-form">Paste form email</button>
-          <button class="btn primary" data-act="new-lead">+ New request</button>
+          <button class="btn" data-act="new-lead">+ New request</button>
+          <button class="btn primary" data-act="log-visit">+ Log a visit</button>
         </div>
       </div>
       <div class="stats">
@@ -584,7 +585,7 @@
     openModal({
       title: isNew ? 'New member' : m.name, body, wide: !isNew,
       foot: isNew ? '' : `<button type="button" class="btn danger" id="del">Delete</button>${contactButtons(m)}
-        <button type="button" class="btn" id="log">Visit log</button><button type="button" class="btn" id="addJob">+ Add-on job</button>`,
+        <button type="button" class="btn" id="log">Visit log</button><button type="button" class="btn" id="addJob">+ Add-on job</button><button type="button" class="btn primary" id="logVisit">Log a visit</button>`,
       onSave: (d) => {
         if (!d.name.trim()) { toast('Name is required'); return false; }
         if (d.status === 'Cancelled' && !d.endDate) d.endDate = todayISO();
@@ -597,6 +598,7 @@
         $('#del', root)?.addEventListener('click', () => confirmBox(`Delete ${m.name} and all their visits?`, () => { S.remove('members', m.id); toast('Deleted'); }));
         $('#log', root)?.addEventListener('click', () => { closeModal(); state.logMember = m.id; location.hash = '#visitlog'; });
         $('#addJob', root)?.addEventListener('click', () => jobForm({ memberId: m.id, month: S.monthKey() }));
+        $('#logVisit', root)?.addEventListener('click', () => logVisitDialog(m.id));
       }
     });
   }
@@ -640,8 +642,9 @@
       <div class="page-head">
         <div><h1>Monthly work</h1><div class="sub">Plan visits, send reports within 24 hours, and track add-on jobs.</div></div>
         <div class="row">${monthNav(mk, 'data-work-month')}
-          <button class="btn ${missing ? 'primary' : ''}" data-act="gen-visits" ${missing ? '' : 'disabled'}>${missing ? `Generate ${missing} visit${missing === 1 ? '' : 's'} from plans` : 'All plan visits created'}</button>
-          <button class="btn" data-act="new-visit">+ Visit</button>
+          <button class="btn" data-act="gen-visits" ${missing ? '' : 'disabled'}>${missing ? `Generate ${missing} visit${missing === 1 ? '' : 's'} from plans` : 'All plan visits created'}</button>
+          <button class="btn primary" data-act="log-visit">+ Log a visit</button>
+          <button class="btn" data-act="new-visit">Plan a visit</button>
           <button class="btn" data-act="new-job">+ Add-on job</button>
         </div>
       </div>
@@ -1039,7 +1042,7 @@
     return `
       <div class="page-head">
         <div><h1>Visit report</h1><div class="sub">${esc(m.name || '—')} · ${esc(m.propertyAddress || m.region || '')}</div></div>
-        <div class="row"><a class="btn" href="#month">← Monthly work</a><button class="btn" data-act="edit-visit">Change date / member</button></div>
+        <div class="row"><a class="btn" href="#month">← Monthly work</a><button class="btn" data-act="edit-visit">Change date / member</button><button class="btn primary" data-act="prepare-report">Prepare client report</button></div>
       </div>
 
       <section class="card card-pad vr-section">
@@ -1114,10 +1117,8 @@
           <label class="field full"><span>Internal notes (not sent)</span><textarea id="vr-notes" data-vr="notes" rows="2">${esc(v.notes || '')}</textarea></label>
         </div>
         <div class="row" style="margin-top:12px">
-          <button class="btn" data-act="copy-report-text">Copy WhatsApp text</button>
-          ${m.phone ? `<a class="btn" href="${esc(waLink(m.phone))}?text=${encodeURIComponent(reportText(v))}" target="_blank" rel="noopener">Open WhatsApp chat</a>` : ''}
-          <button class="btn" data-act="download-visit-report">Download report with photos</button>
-          ${v.status !== 'Report sent' ? `<button class="btn primary" data-act="mark-report-sent">Mark report sent</button>` : `<span class="pill s-report-sent">Report sent ${fmtDate(v.reportSentAt)}</span>`}
+          <button class="btn primary" data-act="prepare-report">Prepare client report</button>
+          ${v.status === 'Report sent' ? `<span class="pill s-report-sent">Report sent ${fmtDate(v.reportSentAt)}</span>` : ''}
         </div>
         ${m.email ? `<p class="muted small" style="margin:10px 0 0">Owner email: <span class="selectable">${esc(m.email)}</span> · reports go by ${esc(m.reportChannel || 'WhatsApp')}</p>` : ''}
       </section>`;
@@ -1223,34 +1224,30 @@
     return new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); });
   }
 
-  /* A standalone report file for the owner, with photos embedded so it opens anywhere. */
-  async function downloadVisitReport() {
-    const v = S.get('visits', state.visitId);
+  /* Client report styles, scoped under .cr so the same markup works in the in-app preview and the downloaded file. */
+  const REPORT_CSS = `
+.cr{font:15px/1.5 Manrope,system-ui,-apple-system,Segoe UI,sans-serif;color:#0e0d1b;background:#fff;max-width:820px;margin:0 auto;padding:28px 18px}
+.cr h1{font:600 22px Poppins,system-ui,sans-serif;margin:0}.cr h2{font:600 16px Poppins,system-ui,sans-serif;margin:26px 0 10px}
+.cr .brand{color:#c8291d;font-weight:700;letter-spacing:.04em;text-transform:uppercase;font-size:12px}
+.cr .meta{color:#595963;margin-top:4px}.cr .box{background:#f7f7f9;border:1px solid #e8e8ec;border-radius:10px;padding:12px 14px;white-space:pre-wrap}
+.cr table{width:100%;border-collapse:collapse}.cr td{padding:7px 4px;border-bottom:1px solid #e8e8ec;vertical-align:top;background:none}
+.cr .ok{color:#2e7d4f;font-weight:700}.cr .issue{color:#b23b3b;font-weight:700}.cr .na{color:#65656f}
+.cr .prob{border-left:4px solid #c8291d;padding:6px 12px;margin:8px 0;background:#fff7f6}
+.cr .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.cr figure{margin:0;break-inside:avoid}.cr figure img,.cr figure video{width:100%;border-radius:8px;display:block;background:#eee}
+.cr figcaption{font-size:13px;color:#595963;margin-top:4px}.cr .foot{margin-top:30px;color:#65656f;font-size:12px}
+@media print{.cr .grid{grid-template-columns:repeat(2,1fr)}}`;
+
+  /* Builds the client report. src(item) returns the photo/video source to use (live URL or embedded data). */
+  function reportBody(v, src, skippedVideos = 0) {
     const m = member(v.memberId) || {};
-    toast('Preparing report…');
     const { items, res } = checklistSummary(v);
     const media = v.media || [];
-    const photos = [];
-    for (const x of media.filter(x => x.type === 'image')) {
-      try { photos.push({ ...x, src: await blobToDataURL(mediaUrl(x)) }); } catch { /* missing asset: skip */ }
-    }
-    const videos = media.filter(x => x.type === 'video').length;
+    const photos = media.filter(x => x.type === 'image' && src(x));
+    const videos = media.filter(x => x.type === 'video' && src(x));
     const open = (v.problems || []).filter(p => p.status !== 'Resolved');
-    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Visit report ${esc(v.date)} – ${esc(m.propertyAddress || m.name || '')}</title>
-<style>
-body{font:15px/1.5 Manrope,system-ui,-apple-system,Segoe UI,sans-serif;color:#0e0d1b;max-width:820px;margin:0 auto;padding:28px 18px;background:#fff}
-h1{font:600 22px Poppins,system-ui,sans-serif;margin:0}h2{font:600 16px Poppins,system-ui,sans-serif;margin:26px 0 10px}
-.brand{color:#c8291d;font-weight:700;letter-spacing:.04em;text-transform:uppercase;font-size:12px}
-.meta{color:#595963;margin-top:4px}.box{background:#f7f7f9;border:1px solid #e8e8ec;border-radius:10px;padding:12px 14px;white-space:pre-wrap}
-table{width:100%;border-collapse:collapse}td{padding:7px 4px;border-bottom:1px solid #e8e8ec;vertical-align:top}
-.ok{color:#2e7d4f;font-weight:700}.issue{color:#b23b3b;font-weight:700}.na{color:#65656f}
-.prob{border-left:4px solid #c8291d;padding:6px 12px;margin:8px 0;background:#fff7f6}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
-figure{margin:0}figure img{width:100%;border-radius:8px;display:block}figcaption{font-size:13px;color:#595963;margin-top:4px}
-.foot{margin-top:30px;color:#65656f;font-size:12px}
-@media print{.grid{grid-template-columns:repeat(2,1fr)}figure{break-inside:avoid}}
-</style></head><body>
+    const cap = (x) => `<figcaption>${esc(fmtDateTime(x.takenAt))}${x.caption ? ' · ' + esc(x.caption) : ''}</figcaption>`;
+    return `<div class="cr">
 <div class="brand">${esc(ST().businessName)}</div>
 <h1>Property visit report</h1>
 <div class="meta">${esc(m.propertyAddress || '')}${m.region ? ' · ' + esc(m.region) : ''}<br>
@@ -1259,12 +1256,83 @@ ${esc(fmtDay(v.date))} ${v.date ? esc(v.date.slice(0, 4)) : ''}${v.arrivedAt ? `
 ${v.humidity || v.temperature ? `<p>Indoor conditions: ${v.humidity ? `<b>${esc(v.humidity)} %RH</b>` : ''}${v.humidity && v.temperature ? ' · ' : ''}${v.temperature ? `<b>${esc(v.temperature)} °C</b>` : ''}</p>` : ''}
 ${open.length ? `<h2>Needs attention</h2>${open.map(p => `<div class="prob"><b>${esc(p.severity)}:</b> ${esc(p.text)}${p.action ? `<br><span class="meta">Recommended: ${esc(p.action)}</span>` : ''}</div>`).join('')}` : ''}
 <h2>Checklist</h2><table>${items.map(i => { const r = res[i] || {}; return `<tr><td>${esc(i)}${r.note ? `<br><span class="meta">${esc(r.note)}</span>` : ''}</td><td class="${r.status || 'na'}" style="text-align:right;white-space:nowrap">${r.status ? CHECK[r.status] : '—'}</td></tr>`; }).join('')}</table>
-${photos.length ? `<h2>Photos</h2><div class="grid">${photos.map(x => `<figure><img src="${x.src}" alt=""><figcaption>${esc(fmtDateTime(x.takenAt))}${x.caption ? ' · ' + esc(x.caption) : ''}</figcaption></figure>`).join('')}</div>` : ''}
-${videos ? `<p class="meta">${videos} video${videos === 1 ? '' : 's'} recorded on this visit, sent separately.</p>` : ''}
+${photos.length ? `<h2>Photos</h2><div class="grid">${photos.map(x => `<figure><img src="${src(x)}" alt="${esc(x.caption || 'Visit photo')}">${cap(x)}</figure>`).join('')}</div>` : ''}
+${videos.length ? `<h2>Videos</h2><div class="grid">${videos.map(x => `<figure><video src="${src(x)}" controls playsinline preload="metadata"></video>${cap(x)}</figure>`).join('')}</div>` : ''}
+${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos === 1 ? '' : 's'} from this visit sent separately.</p>` : ''}
 <p class="foot">Report prepared ${esc(fmtDate(todayISO()))}. Photos are timestamped at capture.</p>
-</body></html>`;
+</div>`;
+  }
+
+  /* Step 1: preview the report in the app, with every way to send it. */
+  function prepareClientReport() {
+    const v = S.get('visits', state.visitId);
+    const m = member(v.memberId) || {};
+    const media = v.media || [];
+    const warn = [];
+    if (!Object.values(v.checklist || {}).some(r => r.status)) warn.push('the checklist is empty');
+    if (!media.length) warn.push('no photos yet');
+    if (!v.summary) warn.push('no message to the owner (a default sentence will be used)');
+    openModal({
+      title: 'Client report', wide: true,
+      body: `${warn.length ? `<p class="small" style="margin:0 0 12px"><span class="pill s-in-progress">Check</span> ${esc(warn.join(' · '))}</p>` : ''}
+        <style>${REPORT_CSS}</style>
+        <div class="report-preview">${reportBody(v, mediaUrl)}</div>`,
+      foot: `<button type="button" class="btn primary" id="crDownload">Download report file</button>
+        <button type="button" class="btn" id="crCopy">Copy WhatsApp text</button>
+        ${m.phone ? `<a class="btn" href="${esc(waLink(m.phone))}?text=${encodeURIComponent(reportText(v))}" target="_blank" rel="noopener">Open WhatsApp</a>` : ''}
+        ${v.status !== 'Report sent' ? `<button type="button" class="btn" id="crSent">Mark sent</button>` : ''}`,
+      bind: (root) => {
+        $('#crDownload', root).addEventListener('click', downloadVisitReport);
+        $('#crCopy', root).addEventListener('click', () => actions['copy-report-text']());
+        $('#crSent', root)?.addEventListener('click', () => { actions['mark-report-sent'](); closeModal(); });
+      }
+    });
+  }
+
+  /* Step 2: a standalone file with photos (and videos up to ~25 MB in total) embedded, so it opens anywhere. */
+  async function downloadVisitReport() {
+    const v = S.get('visits', state.visitId);
+    const m = member(v.memberId) || {};
+    toast('Preparing report…');
+    const data = {};
+    let videoBytes = 0, skipped = 0;
+    for (const x of v.media || []) {
+      try {
+        if (x.type === 'video') {
+          const b = await (await fetch(mediaUrl(x))).blob();
+          if (videoBytes + b.size > 25 * 1024 * 1024) { skipped++; continue; }
+          videoBytes += b.size;
+          data[x.id] = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(b); });
+        } else data[x.id] = await blobToDataURL(mediaUrl(x));
+      } catch { /* missing asset: leave it out */ }
+    }
+    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Visit report ${esc(v.date)} – ${esc(m.propertyAddress || m.name || '')}</title>
+<style>body{margin:0;background:#fff}${REPORT_CSS}</style></head><body>${reportBody(v, (x) => data[x.id], skipped)}</body></html>`;
     const place = slug(m.propertyAddress || m.name || 'property').slice(0, 40);
     download(`estia-visit-${v.date}-${place}.html`, html, 'text/html');
+  }
+
+  /* Quick start from anywhere: pick the member, the visit opens ready to fill in. */
+  function logVisitDialog(memberId) {
+    openModal({
+      title: 'Log a visit',
+      body: `<div class="fields">
+        <label class="field full"><span>Member / property *</span><select name="memberId" required>${memberOptions(memberId)}</select></label>
+        ${field('date', 'Date of visit', todayISO(), 'date', 'required')}
+        ${field('arrivedAt', 'Arrived at', timeNow(), 'time')}
+      </div>
+      <p class="muted small" style="margin:12px 0 0">If this visit is already planned for this month, it will be used instead of creating a new one.</p>`,
+      submitLabel: 'Start visit report',
+      onSave: (d) => {
+        if (!d.memberId) { toast('Choose a member'); return false; }
+        const planned = S.all('visits').find(x => x.memberId === d.memberId && x.status === 'Scheduled' && x.month === d.date.slice(0, 7));
+        const v = planned
+          ? S.save('visits', { id: planned.id, date: d.date, month: d.date.slice(0, 7), arrivedAt: d.arrivedAt, status: 'Visited' })
+          : S.save('visits', { memberId: d.memberId, date: d.date, month: d.date.slice(0, 7), arrivedAt: d.arrivedAt, status: 'Visited' });
+        setTimeout(() => openVisit(v.id), 0);
+      }
+    });
   }
 
   function bindVisitView() {
@@ -1375,6 +1443,8 @@ ${videos ? `<p class="meta">${videos} video${videos === 1 ? '' : 's'} recorded o
       }
     },
     'download-visit-report': downloadVisitReport,
+    'prepare-report': prepareClientReport,
+    'log-visit': () => logVisitDialog(),
     'mark-report-sent': () => { const v = S.get('visits', state.visitId); saveVisit(v, { status: 'Report sent', reportSentAt: todayISO() }); render(); toast('Report marked as sent'); }
   });
 
