@@ -1,39 +1,61 @@
 /* Estia CRM – data layer. Everything lives in localStorage under one key. */
 (function () {
-  const KEY = 'estia-crm:v1';
+  const KEY = 'estia-crm:v2';
 
-  const REQUEST_STATUSES = ['New', 'Contacted', 'Quoted', 'Won', 'Lost'];
-  const PROJECT_STATUSES = ['Planned', 'In progress', 'Review', 'Done'];
+  const LEAD_STATUSES = ['New', 'Call booked', 'Call done', 'Proposal sent', 'Won', 'Lost'];
+  const MEMBER_STATUSES = ['Onboarding', 'Active', 'Paused', 'Cancelled'];
+  const VISIT_STATUSES = ['Scheduled', 'Visited', 'Report sent', 'Skipped'];
+  const JOB_STATUSES = ['Requested', 'Quoted', 'Approved', 'In progress', 'Done', 'Declined'];
+  const PARTNER_STATUSES = ['New', 'Call done', 'Vetting', 'Approved', 'Rejected'];
 
+  // Mirrors estiagreekhome.online (plans page, contact form, partner forms).
   const DEFAULT_SETTINGS = {
     businessName: 'Estia Greek Home',
     currency: 'EUR',
+    vatRate: 24,
+    onboardingFee: 100,
     monthlyRevenueTarget: 0,
-    services: [
-      'Property management',
-      'Short-term rental management',
-      'Renovation',
-      'Cleaning & maintenance',
-      'Interior design',
-      'Consultation'
+    plans: [
+      { name: 'Essential', monthly: 79, annual: 948, visits: 1 },
+      { name: 'Recommended', monthly: 119, annual: 1428, visits: 2 },
+      { name: 'Premium', monthly: 199, annual: 2388, visits: 4 }
     ],
-    sources: ['Website form', 'Email', 'Phone', 'WhatsApp', 'Instagram', 'Facebook', 'Referral', 'Other']
+    services: [
+      'Maintenance & Oversight',
+      'Bills, Admin & Building',
+      'Renovation Oversight',
+      'Airbnb & STR',
+      'Arrival & Departure',
+      'Concierge & Lifestyle',
+      'Vehicle Care'
+    ],
+    sources: ['Website form', 'WhatsApp', 'Email', 'Phone', 'Instagram', 'Facebook', 'Referral', 'Partner', 'Other'],
+    audiences: ['Greek abroad', 'International owner', 'Investor'],
+    regions: ['Athens', 'Athens Riviera', 'Thessaloniki', 'Peloponnese', 'Kalamata & Costa Navarino', 'Halkidiki', 'Pelion', 'Evia', 'Islands', 'Other'],
+    propertyTypes: ['Apartment', 'House', 'Villa', 'Multiple units'],
+    visitFrequencies: ['Monthly', 'Quarterly', 'Once or twice a year', 'Rarely'],
+    partnerTracks: ['Trade partner', 'Professional partner', 'Referral / community partner']
   };
 
+  const COLLECTIONS = ['leads', 'members', 'visits', 'jobs', 'partners'];
+
   function empty() {
-    return { settings: structuredClone(DEFAULT_SETTINGS), requests: [], projects: [] };
+    const d = { settings: structuredClone(DEFAULT_SETTINGS) };
+    COLLECTIONS.forEach(c => d[c] = []);
+    return d;
+  }
+
+  function normalise(data) {
+    const d = empty();
+    d.settings = Object.assign(d.settings, data.settings || {});
+    COLLECTIONS.forEach(c => { if (Array.isArray(data[c])) d[c] = data[c]; });
+    return d;
   }
 
   function load() {
     try {
       const raw = localStorage.getItem(KEY);
-      if (!raw) return empty();
-      const data = JSON.parse(raw);
-      return {
-        settings: Object.assign(structuredClone(DEFAULT_SETTINGS), data.settings || {}),
-        requests: Array.isArray(data.requests) ? data.requests : [],
-        projects: Array.isArray(data.projects) ? data.projects : []
-      };
+      return raw ? normalise(JSON.parse(raw)) : empty();
     } catch (e) {
       console.error('Could not read saved data', e);
       return empty();
@@ -43,13 +65,8 @@
   let db = load();
 
   function save() {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(db));
-      return true;
-    } catch (e) {
-      console.error('Could not save', e);
-      return false;
-    }
+    try { localStorage.setItem(KEY, JSON.stringify(db)); return true; }
+    catch (e) { console.error('Could not save', e); return false; }
   }
 
   // Drop undefined keys so they don't overwrite defaults in Object.assign.
@@ -64,146 +81,155 @@
     const [y, m] = key.split('-').map(Number);
     return monthKey(new Date(y, m - 1 + delta, 1));
   };
+  const daysInMonth = (key) => { const [y, m] = key.split('-').map(Number); return new Date(y, m, 0).getDate(); };
+
+  const DEFAULTS = {
+    leads: () => ({ status: 'New', source: 'Website form', activity: [] }),
+    members: () => ({ status: 'Onboarding', plan: 'Recommended', billing: 'Monthly', reportChannel: 'WhatsApp', startDate: new Date().toISOString().slice(0, 10) }),
+    visits: () => ({ status: 'Scheduled', issues: '' }),
+    jobs: () => ({ status: 'Requested', price: 0, cost: 0, paid: false }),
+    partners: () => ({ status: 'New', activity: [] })
+  };
 
   const Store = {
-    REQUEST_STATUSES,
-    PROJECT_STATUSES,
-    uid, now, monthKey, shiftMonth,
+    LEAD_STATUSES, MEMBER_STATUSES, VISIT_STATUSES, JOB_STATUSES, PARTNER_STATUSES, DEFAULT_SETTINGS,
+    uid, now, monthKey, shiftMonth, daysInMonth,
 
     get settings() { return db.settings; },
-    get requests() { return db.requests; },
-    get projects() { return db.projects; },
+    all(col) { return db[col]; },
+    get(col, id) { return db[col].find(x => x.id === id); },
+
+    save(col, data) {
+      let item = data.id && this.get(col, data.id);
+      if (item) {
+        if (data.status && item.status && data.status !== item.status && item.activity) {
+          item.activity.push({ at: now(), text: `Status: ${item.status} → ${data.status}` });
+        }
+        Object.assign(item, clean(data), { updatedAt: now() });
+      } else {
+        item = Object.assign({ id: uid(), createdAt: now() }, DEFAULTS[col](), clean(data));
+        db[col].push(item);
+      }
+      save();
+      return item;
+    },
+
+    remove(col, id) {
+      db[col] = db[col].filter(x => x.id !== id);
+      if (col === 'members') {
+        db.visits = db.visits.filter(v => v.memberId !== id);
+        db.jobs.forEach(j => { if (j.memberId === id) j.memberId = ''; });
+        db.leads.forEach(l => { if (l.memberId === id) delete l.memberId; });
+      }
+      if (col === 'partners') db.jobs.forEach(j => { if (j.partnerId === id) j.partnerId = ''; });
+      save();
+    },
+
+    addNote(col, id, text) {
+      const x = this.get(col, id);
+      if (!x || !text.trim()) return;
+      (x.activity ||= []).push({ at: now(), text: text.trim(), note: true });
+      save();
+    },
 
     updateSettings(patch) { Object.assign(db.settings, patch); save(); },
 
-    /* ---- requests ---- */
-    getRequest(id) { return db.requests.find(r => r.id === id); },
-    saveRequest(data) {
-      let r = data.id && this.getRequest(data.id);
-      if (r) {
-        if (data.status && data.status !== r.status) {
-          (r.activity ||= []).push({ at: now(), text: `Status: ${r.status} → ${data.status}` });
-        }
-        Object.assign(r, clean(data), { updatedAt: now() });
-      } else {
-        r = Object.assign({
-          id: uid(), createdAt: now(), status: 'New', activity: []
-        }, clean(data));
-        db.requests.push(r);
-      }
-      save();
-      return r;
-    },
-    addRequestNote(id, text) {
-      const r = this.getRequest(id);
-      if (!r || !text.trim()) return;
-      (r.activity ||= []).push({ at: now(), text: text.trim(), note: true });
-      save();
-    },
-    deleteRequest(id) {
-      db.requests = db.requests.filter(r => r.id !== id);
-      save();
+    plan(name) { return db.settings.plans.find(p => p.name === name); },
+
+    /* Monthly recurring revenue (ex VAT) for one member; annual plans spread over 12 months. */
+    memberMRR(m) {
+      const p = this.plan(m.plan);
+      if (!p) return 0;
+      return m.billing === 'Annual' ? p.annual / 12 : p.monthly;
     },
 
-    /* ---- projects ---- */
-    getProject(id) { return db.projects.find(p => p.id === id); },
-    saveProject(data) {
-      let p = data.id && this.getProject(data.id);
-      if (p) {
-        Object.assign(p, clean(data), { updatedAt: now() });
-      } else {
-        p = Object.assign({
-          id: uid(), createdAt: now(), status: 'Planned', tasks: [], paid: false, recurring: false
-        }, clean(data));
-        db.projects.push(p);
+    /* Was this member billable in the given month? */
+    activeIn(m, mk) {
+      if (m.status === 'Onboarding' || m.status === 'Paused') return false;
+      const start = (m.startDate || m.createdAt || '').slice(0, 7);
+      if (start && start > mk) return false;
+      if (m.status === 'Cancelled') {
+        const end = (m.endDate || m.updatedAt || '').slice(0, 7);
+        if (!end || end < mk) return false;
       }
-      save();
-      return p;
+      return true;
     },
-    deleteProject(id) {
-      db.projects = db.projects.filter(p => p.id !== id);
-      db.requests.forEach(r => { if (r.projectId === id) delete r.projectId; });
-      save();
-    },
-    convertRequestToProject(reqId, month) {
-      const r = this.getRequest(reqId);
-      if (!r) return null;
-      const p = this.saveProject({
-        title: `${r.service || 'Project'} – ${r.name}`,
-        clientName: r.name, clientEmail: r.email || '', clientPhone: r.phone || '',
-        service: r.service || '', month: month || monthKey(),
-        value: Number(r.budget) || 0, cost: 0, requestId: r.id,
-        notes: r.message || ''
+
+    convertLead(leadId) {
+      const l = this.get('leads', leadId);
+      if (!l) return null;
+      const m = this.save('members', {
+        name: l.name, email: l.email || '', phone: l.phone || '',
+        livesIn: l.ownerLocation || '', propertyAddress: l.propertyLocation || '',
+        propertyType: l.propertyType || '', audience: l.audience || '',
+        plan: l.interestedPlan || 'Recommended', leadId: l.id, notes: l.message || ''
       });
-      this.saveRequest({ id: r.id, status: 'Won', projectId: p.id });
-      return p;
+      this.save('leads', { id: l.id, status: 'Won', memberId: m.id });
+      return m;
     },
-    /* Copy recurring projects from one month into the next (skips ones already copied). */
-    rollRecurring(fromMonth) {
-      const toMonth = shiftMonth(fromMonth, 1);
-      const existing = new Set(db.projects.filter(p => p.month === toMonth && p.seriesId).map(p => p.seriesId));
+
+    /* Create this month's scheduled visits for every active member, per their plan. Skips existing ones. */
+    generateVisits(mk) {
       let n = 0;
-      db.projects.filter(p => p.month === fromMonth && p.recurring).forEach(p => {
-        const seriesId = p.seriesId || p.id;
-        if (!p.seriesId) p.seriesId = seriesId;
-        if (existing.has(seriesId)) return;
-        db.projects.push({
-          ...structuredClone(p),
-          id: uid(), createdAt: now(), updatedAt: undefined,
-          month: toMonth, status: 'Planned', paid: false, dueDate: '',
-          seriesId, tasks: (p.tasks || []).map(t => ({ ...t, id: uid(), done: false }))
-        });
-        n++;
+      const dim = daysInMonth(mk);
+      db.members.filter(m => m.status === 'Active' && this.activeIn(m, mk)).forEach(m => {
+        const want = this.plan(m.plan)?.visits || 1;
+        const have = db.visits.filter(v => v.memberId === m.id && v.month === mk).length;
+        for (let i = have; i < want; i++) {
+          // Spread visits evenly through the month.
+          const day = Math.min(dim, Math.max(1, Math.round(((i + 0.5) * dim) / want)));
+          db.visits.push({ id: uid(), createdAt: now(), memberId: m.id, month: mk, date: `${mk}-${String(day).padStart(2, '0')}`, status: 'Scheduled', issues: '' });
+          n++;
+        }
       });
       save();
-      return { count: n, toMonth };
+      return n;
     },
 
     /* ---- backup ---- */
     exportJSON() { return JSON.stringify(db, null, 2); },
     importJSON(text) {
       const data = JSON.parse(text);
-      if (!data || !Array.isArray(data.requests) || !Array.isArray(data.projects)) {
-        throw new Error('This file is not an Estia CRM backup.');
-      }
-      db = {
-        settings: Object.assign(structuredClone(DEFAULT_SETTINGS), data.settings || {}),
-        requests: data.requests, projects: data.projects
-      };
+      if (!data || !Array.isArray(data.leads) || !Array.isArray(data.members)) throw new Error('This file is not an Estia CRM backup.');
+      db = normalise(data);
       save();
     },
     reset() { db = empty(); save(); },
 
     loadDemo() {
-      const m0 = monthKey(), m1 = shiftMonth(m0, -1), m2 = shiftMonth(m0, -2);
-      const day = (mk, d) => `${mk}-${String(d).padStart(2, '0')}T10:00:00.000Z`;
-      const S = db.settings.services;
-      const reqs = [
-        ['Maria Papadopoulou', 'maria@example.com', '+30 690 000 0001', 'Website form', S[0], 450, 'Looking for full management of a 2-bed apartment in Athens.', 'New', day(m0, 3)],
-        ['John Miller', 'john@example.com', '+44 7700 900001', 'Email', S[1], 300, 'Airbnb management for our villa in Paros, May–Oct.', 'Contacted', day(m0, 2)],
-        ['Eleni K.', 'eleni@example.com', '', 'Instagram', S[3], 120, 'Monthly deep cleaning for a holiday home.', 'Quoted', day(m0, 1)],
-        ['Nikos Georgiou', 'nikos@example.com', '+30 690 000 0004', 'Referral', S[2], 8500, 'Bathroom and kitchen renovation.', 'Won', day(m1, 12)],
-        ['Sophie Laurent', 'sophie@example.com', '', 'Website form', S[4], 2200, 'Interior refresh for a rental studio.', 'Lost', day(m1, 8)],
-        ['Anna Schmidt', 'anna@example.com', '', 'Facebook', S[1], 350, 'Need help listing our apartment.', 'Won', day(m2, 20)],
-        ['Giorgos Dimitriou', 'giorgos@example.com', '+30 690 000 0007', 'Phone', S[5], 150, 'Advice before buying a property in Crete.', 'New', day(m0, 4)]
-      ];
-      reqs.forEach(([name, email, phone, source, service, budget, message, status, createdAt]) => {
-        db.requests.push({ id: uid(), name, email, phone, source, service, budget, message, status, createdAt,
-          followUp: status === 'Contacted' || status === 'Quoted' ? new Date(Date.now() + 2 * 864e5).toISOString().slice(0, 10) : '',
-          activity: [] });
-      });
-      const proj = (o) => db.projects.push(Object.assign({ id: uid(), createdAt: now(), tasks: [], paid: false, recurring: false, cost: 0 }, o));
-      const tasks = (...t) => t.map(([text, done]) => ({ id: uid(), text, done: !!done }));
-      [m2, m1, m0].forEach((mk, i) => {
-        proj({ title: 'Villa Paros – rental management', clientName: 'Anna Schmidt', clientEmail: 'anna@example.com', service: S[1], month: mk, status: i < 2 ? 'Done' : 'In progress', value: 350, cost: 60, paid: i < 2, recurring: true, seriesId: 'demo-series-1',
-          tasks: tasks(['Guest check-ins', i < 2], ['Monthly owner statement', i < 2], ['Linen change', true]) });
-      });
-      proj({ title: 'Renovation – Georgiou apartment', clientName: 'Nikos Georgiou', clientEmail: 'nikos@example.com', service: S[2], month: m1, status: 'Done', value: 8500, cost: 5900, paid: true,
-        tasks: tasks(['Demolition', true], ['Plumbing', true], ['Tiling', true]) });
-      proj({ title: 'Renovation – snag list', clientName: 'Nikos Georgiou', clientEmail: 'nikos@example.com', service: S[2], month: m0, status: 'Review', value: 600, cost: 200, paid: false, dueDate: `${m0}-20`,
-        tasks: tasks(['Fix grout', true], ['Repaint hallway', false]) });
-      proj({ title: 'Kolonaki flat – management', clientName: 'Maria Papadopoulou', clientEmail: 'maria@example.com', service: S[0], month: m0, status: 'Planned', value: 450, cost: 50, paid: false, recurring: true, dueDate: `${m0}-28`,
-        tasks: tasks(['Inspection visit'], ['Collect rent'], ['Send owner report']) });
+      const m0 = monthKey(), m1 = shiftMonth(m0, -1), m2 = shiftMonth(m0, -2), m3 = shiftMonth(m0, -3);
+      const at = (mk, d) => `${mk}-${String(d).padStart(2, '0')}T10:00:00.000Z`;
+      const lead = (o) => db.leads.push(Object.assign({ id: uid(), activity: [], source: 'Website form', status: 'New' }, o));
+      lead({ name: 'Helen Stavrou', email: 'helen@example.com', phone: '+61 400 000 001', ownerLocation: 'Melbourne', propertyLocation: 'Kalamata', propertyType: 'House', visitFrequency: 'Once or twice a year', audience: 'Greek abroad', message: 'My late father\'s house has been empty since spring. Worried about humidity.', createdAt: at(m0, 2) });
+      lead({ name: 'James Carter', email: 'james@example.com', phone: '+44 7700 900002', ownerLocation: 'London', propertyLocation: 'Glyfada', propertyType: 'Apartment', visitFrequency: 'Quarterly', audience: 'International owner', status: 'Call booked', callDate: new Date(Date.now() + 864e5).toISOString().slice(0, 10), message: 'Bought last year, insurance asked about vacancy.', createdAt: at(m0, 1) });
+      lead({ name: 'Nick Pappas', email: 'nick@example.com', phone: '+1 312 555 0103', ownerLocation: 'Chicago', propertyLocation: 'Thessaloniki', propertyType: 'Apartment', visitFrequency: 'Rarely', audience: 'Greek abroad', status: 'Proposal sent', interestedPlan: 'Essential', followUp: new Date().toISOString().slice(0, 10), createdAt: at(m1, 22) });
+      lead({ name: 'Sofia Laine', email: 'sofia@example.com', source: 'Instagram', ownerLocation: 'Helsinki', propertyLocation: 'Pelion', propertyType: 'Villa', audience: 'International owner', status: 'Lost', lostReason: 'Outside coverage / price', createdAt: at(m1, 9) });
+      lead({ name: 'Mark Rossi', email: 'mark@example.com', source: 'Referral', ownerLocation: 'Toronto', propertyLocation: 'Athens Riviera', propertyType: 'Multiple units', audience: 'Investor', status: 'Won', createdAt: at(m2, 14) });
+
+      const mem = (o) => { const m = Object.assign({ id: uid(), createdAt: now(), status: 'Active', billing: 'Monthly', reportChannel: 'WhatsApp', onboardingPaid: true }, o); db.members.push(m); return m; };
+      const a = mem({ name: 'Anna Georgiou', email: 'anna@example.com', phone: '+61 400 000 010', livesIn: 'Sydney', propertyAddress: 'Kolonaki, Athens', region: 'Athens', propertyType: 'Apartment', audience: 'Greek abroad', plan: 'Recommended', startDate: `${m3}-05`, keysHeld: true });
+      const b = mem({ name: 'Mark Rossi', email: 'mark@example.com', phone: '+1 416 555 0199', livesIn: 'Toronto', propertyAddress: 'Vouliagmeni villa', region: 'Athens Riviera', propertyType: 'Villa', audience: 'Investor', plan: 'Premium', billing: 'Annual', startDate: `${m2}-20`, keysHeld: true, reportChannel: 'Email' });
+      const c = mem({ name: 'Claire Dubois', email: 'claire@example.com', livesIn: 'Lyon', propertyAddress: 'Stoupa', region: 'Kalamata & Costa Navarino', propertyType: 'House', audience: 'International owner', plan: 'Essential', startDate: `${m1}-03`, keysHeld: true });
+      mem({ name: 'Peter Nikolaou', email: 'peter@example.com', livesIn: 'Boston', propertyAddress: 'Kalamaria, Thessaloniki', region: 'Thessaloniki', propertyType: 'Apartment', audience: 'Greek abroad', plan: 'Essential', status: 'Onboarding', startDate: `${m0}-15`, onboardingPaid: false });
+
+      const visit = (memberId, mk, day, status, issues = '') => db.visits.push({ id: uid(), createdAt: now(), memberId, month: mk, date: `${mk}-${String(day).padStart(2, '0')}`, status, issues,
+        reportSentAt: status === 'Report sent' ? `${mk}-${String(day).padStart(2, '0')}` : '' });
+      [m2, m1].forEach(mk => { visit(a.id, mk, 8, 'Report sent'); visit(a.id, mk, 22, 'Report sent', mk === m1 ? 'Small leak under kitchen sink' : ''); });
+      [8, 15, 22, 28].forEach((d, i) => visit(b.id, m1, d, 'Report sent', i === 2 ? 'Pool pump noisy' : ''));
+      visit(c.id, m1, 18, 'Report sent');
+      visit(a.id, m0, 8, 'Report sent'); visit(a.id, m0, 22, 'Scheduled');
+      [8, 15].forEach(d => visit(b.id, m0, d, 'Visited')); [22, 28].forEach(d => visit(b.id, m0, d, 'Scheduled'));
+      visit(c.id, m0, 16, 'Scheduled');
+
+      const pid = uid();
+      db.partners.push({ id: pid, createdAt: at(m1, 2), track: 'Trade partner', name: 'Yannis Plumbing', company: 'Yannis K. Plumbing', email: 'yannis@example.com', phone: '+30 690 000 0020', trade: 'Plumber (υδραυλικός)', area: 'Central Athens, Glyfada', rate: '€50 call-out + €35/hr', insurance: 'Yes — current and active', status: 'Approved', activity: [] });
+      db.partners.push({ id: uid(), createdAt: at(m0, 3), track: 'Referral / community partner', name: 'Greek Community Club Melbourne', email: 'club@example.com', area: 'Melbourne', status: 'New', activity: [] });
+
+      const job = (o) => db.jobs.push(Object.assign({ id: uid(), createdAt: now(), paid: false, cost: 0 }, o));
+      job({ memberId: a.id, service: 'Maintenance & Oversight', title: 'Fix leak under kitchen sink', month: m1, status: 'Done', price: 140, cost: 90, paid: true, partnerId: pid });
+      job({ memberId: b.id, service: 'Maintenance & Oversight', title: 'Pool pump service', month: m0, status: 'Approved', price: 220, cost: 160 });
+      job({ memberId: b.id, service: 'Arrival & Departure', title: 'Pre-arrival clean + fridge stock', month: m0, status: 'Quoted', price: 180, cost: 110 });
+      job({ memberId: c.id, service: 'Bills, Admin & Building', title: 'Building meeting representation', month: m1, status: 'Done', price: 60, cost: 0, paid: true });
       save();
     }
   };
