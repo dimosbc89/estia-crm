@@ -1,7 +1,9 @@
 /* Estia CRM on Cloudflare Workers.
    - Everything (app files and API) sits behind a login.
-   - Data: D1 table `docs` holds the same shard documents the app syncs (settings, members, leads_<year>, visits_<month>…).
-   - Photos/videos: R2 bucket, served only to signed-in users. */
+   - Data: D1 table `docs` holds the same shard documents the app syncs (settings, members_<n>, leads_<year>, visits_<month>…).
+   - Photos/videos: R2 bucket, served only to signed-in users.
+   - Member files (past reports, spreadsheets, contracts…): same R2 bucket under members/<memberId>/<fileId>.
+     R2 itself is the list of files, so two people uploading at the same time never overwrite each other. */
 
 const COOKIE = 'estia_session';
 const SESSION_DAYS = 30;
@@ -9,6 +11,24 @@ const PBKDF2_ITERATIONS = 100000;
 const MAX_LOGIN_ATTEMPTS = 10;          // per IP per 15 minutes
 const MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/webm', 'video/quicktime']);
 const MAX_MEDIA_BYTES = 95 * 1024 * 1024;
+
+// Member files: the type comes from the file extension (browsers often send no type for .msg, .numbers…).
+// No HTML, SVG, XML or script types: a stored file must never run code on the CRM's own address.
+const FILE_TYPES = {
+  pdf: 'application/pdf',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', heic: 'image/heic', heif: 'image/heif',
+  doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  odt: 'application/vnd.oasis.opendocument.text', ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  pages: 'application/vnd.apple.pages', numbers: 'application/vnd.apple.numbers', key: 'application/vnd.apple.keynote',
+  rtf: 'application/rtf', txt: 'text/plain; charset=utf-8', csv: 'text/csv; charset=utf-8',
+  eml: 'message/rfc822', msg: 'application/vnd.ms-outlook', zip: 'application/zip',
+  mp4: 'video/mp4', mov: 'video/quicktime', mp3: 'audio/mpeg', m4a: 'audio/mp4'
+};
+// These open in a browser tab; everything else downloads.
+const INLINE_TYPES = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif', 'text/plain; charset=utf-8', 'video/mp4', 'audio/mpeg', 'audio/mp4']);
+const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 const enc = new TextEncoder();
 const hex = (buf) => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -40,6 +60,60 @@ function withHeaders(res, extra = {}) {
   return r;
 }
 const json = (data, status = 200, headers = {}) => withHeaders(new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...headers } }));
+
+/* Stream an R2 object to a signed-in user, with range requests (video seeking, large PDFs) and 304s.
+   extra(obj) can add headers from the object's metadata. */
+async function serveObject(env, req, key, extra = () => ({})) {
+  const obj = await env.MEDIA.get(key, { range: req.headers, onlyIf: req.headers });
+  if (!obj) return json({ error: 'not found' }, 404);
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set('ETag', obj.httpEtag);
+  headers.set('Accept-Ranges', 'bytes');
+  const cache = { 'Cache-Control': 'private, max-age=31536000, immutable', ...extra(obj) };
+  if (!('body' in obj)) return withHeaders(new Response(null, { status: 304, headers }), cache);
+  let status = 200;
+  if (obj.range && req.headers.has('Range')) {
+    const r = obj.range;
+    const offset = 'suffix' in r ? obj.size - r.suffix : (r.offset || 0);
+    const length = 'suffix' in r ? r.suffix : (r.length ?? obj.size - offset);
+    headers.set('Content-Range', `bytes ${offset}-${offset + length - 1}/${obj.size}`);
+    status = 206;
+  }
+  return withHeaders(new Response(obj.body, { status, headers }), cache);
+}
+
+/* ---- member files ---- */
+function cleanFileName(raw) {
+  let name = String(raw || '');
+  try { name = decodeURIComponent(name); } catch { /* keep as sent */ }
+  name = name.split(/[\\/]/).pop().replace(/[\u0000-\u001f\u007f"<>]/g, '').trim().slice(0, 180);
+  return name || 'file';
+}
+const fileExt = (name) => (String(name).match(/\.([a-z0-9]{1,8})$/i) || [])[1]?.toLowerCase() || '';
+// RFC 6266 / 5987: plain ASCII name for old clients, the real (often Greek) name for everyone else.
+function contentDisposition(name, inline) {
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  const utf8 = encodeURIComponent(name).replace(/['()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return `${inline ? 'inline' : 'attachment'}; filename="${ascii}"; filename*=UTF-8''${utf8}`;
+}
+function fileInfo(o) {
+  const id = o.key.split('/').pop();
+  return {
+    id, name: o.customMetadata?.name || id, type: o.httpMetadata?.contentType || '', size: o.size,
+    uploadedAt: o.customMetadata?.at || o.uploaded.toISOString(), by: o.customMetadata?.by || ''
+  };
+}
+async function listKeys(env, prefix, withMeta) {
+  const out = [];
+  let cursor;
+  do {
+    const page = await env.MEDIA.list({ prefix, cursor, ...(withMeta ? { include: ['httpMetadata', 'customMetadata'] } : {}) });
+    out.push(...page.objects);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return out;
+}
 
 function getCookie(req, name) {
   const m = (req.headers.get('Cookie') || '').match(new RegExp('(?:^|;\\s*)' + name + '=([^;]+)'));
@@ -252,25 +326,53 @@ async function api(req, env, user, path) {
 
   m = path.match(/^\/api\/media\/([a-f0-9]{32})$/);
   if (m) {
-    if (method === 'GET') {
-      const obj = await env.MEDIA.get(m[1], { range: req.headers, onlyIf: req.headers });
-      if (!obj) return json({ error: 'not found' }, 404);
-      const headers = new Headers();
-      obj.writeHttpMetadata(headers);
-      headers.set('ETag', obj.httpEtag);
-      headers.set('Accept-Ranges', 'bytes');
-      if (!('body' in obj)) return withHeaders(new Response(null, { status: 304, headers }), { 'Cache-Control': 'private, max-age=31536000, immutable' });
-      let status = 200;
-      if (obj.range && req.headers.has('Range')) {
-        const { offset = 0, length = obj.size - offset } = obj.range;
-        headers.set('Content-Range', `bytes ${offset}-${offset + length - 1}/${obj.size}`);
-        status = 206;
-      }
-      return withHeaders(new Response(obj.body, { status, headers }), { 'Cache-Control': 'private, max-age=31536000, immutable' });
-    }
+    if (method === 'GET') return serveObject(env, req, m[1]);
     if (method === 'DELETE') {
       await env.MEDIA.delete(m[1]);
       await env.DB.prepare('DELETE FROM media WHERE id = ?').bind(m[1]).run();
+      return json({ deleted: true });
+    }
+  }
+
+  /* Member files: GET lists, POST uploads (raw body + X-File-Name), DELETE removes them all (member deleted). */
+  if (path === '/api/files') {
+    const memberId = new URL(req.url).searchParams.get('member') || '';
+    if (!ID_RE.test(memberId)) return json({ error: 'bad_member' }, 400);
+    const prefix = `members/${memberId}/`;
+    if (method === 'GET') {
+      const files = (await listKeys(env, prefix, true)).map(fileInfo).sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+      return json({ files });
+    }
+    if (method === 'POST') {
+      const name = cleanFileName(req.headers.get('X-File-Name'));
+      const type = FILE_TYPES[fileExt(name)];
+      if (!type) return json({ error: 'unsupported_type' }, 415);
+      const size = Number(req.headers.get('Content-Length') || 0);
+      if (!size) return json({ error: 'empty' }, 400);
+      if (size > MAX_MEDIA_BYTES) return json({ error: 'too_large' }, 413);
+      const id = randomHex(16), at = new Date().toISOString();
+      const obj = await env.MEDIA.put(prefix + id, req.body, { httpMetadata: { contentType: type }, customMetadata: { name, by: user.email, at } });
+      return json({ file: { id, name, type, size: obj.size, uploadedAt: at, by: user.email } });
+    }
+    if (method === 'DELETE') {
+      const keys = (await listKeys(env, prefix, false)).map(o => o.key);
+      for (let i = 0; i < keys.length; i += 1000) await env.MEDIA.delete(keys.slice(i, i + 1000));
+      return json({ deleted: keys.length });
+    }
+  }
+
+  m = path.match(/^\/api\/files\/([A-Za-z0-9_-]{1,64})\/([a-f0-9]{32})$/);
+  if (m) {
+    const key = `members/${m[1]}/${m[2]}`;
+    if (method === 'GET') {
+      const download = new URL(req.url).searchParams.has('download');
+      return serveObject(env, req, key, (obj) => {
+        const { name, type } = fileInfo(obj);
+        return { 'Content-Disposition': contentDisposition(name, INLINE_TYPES.has(type) && !download) };
+      });
+    }
+    if (method === 'DELETE') {
+      await env.MEDIA.delete(key);
       return json({ deleted: true });
     }
   }

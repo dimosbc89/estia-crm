@@ -81,17 +81,22 @@
     catch (e) { console.error('Could not save', e); return false; }
   }
 
-  /* ---- optional remote sync (Claude artifact db) ----
+  /* ---- optional remote sync (Claude artifact db / Cloudflare D1) ----
      Data is split into shard documents so none gets near the per-document size cap:
-     settings, members, partners, leads_<year>, visits_<month>, jobs_<month>. */
+     settings, partners, members_<0-7>, leads_<year>, visits_<month>, jobs_<month>.
+     Members are spread over 8 documents because each one now carries contacts, property details and notes. */
   let remote = null, flushTimer = null, flushing = false, lastWritten = {};
   const listeners = new Set();
   let syncStatus = 'local';
   const setStatus = (s) => { syncStatus = s; listeners.forEach(fn => fn(s)); };
 
+  const MEMBER_SHARDS = 8;
+  const bucket = (id) => { let h = 0; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % MEMBER_SHARDS; };
+
   function shards() {
-    const out = { settings: { settings: db.settings }, members: { items: db.members }, partners: { items: db.partners } };
+    const out = { settings: { settings: db.settings }, partners: { items: db.partners } };
     const put = (key, item) => { (out[key] ||= { items: [] }).items.push(item); };
+    db.members.forEach(m => put('members_' + bucket(m.id), m));
     db.leads.forEach(l => put('leads_' + String(l.createdAt || '').slice(0, 4), l));
     db.visits.forEach(v => put('visits_' + (v.month || 'none'), v));
     db.jobs.forEach(j => put('jobs_' + (j.month || 'none'), j));
@@ -143,11 +148,15 @@
 
   const DEFAULTS = {
     leads: () => ({ status: 'New', source: 'Website form', activity: [] }),
-    members: () => ({ status: 'Onboarding', plan: 'Recommended', billing: 'Monthly', reportChannel: 'WhatsApp', startDate: new Date().toISOString().slice(0, 10) }),
+    members: () => ({ status: 'Onboarding', plan: 'Recommended', billing: 'Monthly', reportChannel: 'WhatsApp', startDate: new Date().toISOString().slice(0, 10), contacts: [], details: {}, activity: [] }),
     visits: () => ({ status: 'Scheduled', issues: '', checklist: {}, problems: [], media: [] }),
     jobs: () => ({ status: 'Requested', price: 0, cost: 0, paid: false }),
     partners: () => ({ status: 'New', activity: [] })
   };
+
+  // Who is signed in (shown next to notes and status changes); set by the app once it knows.
+  let actor = '';
+  const log = (item, text) => (item.activity ||= []).push({ id: uid(), at: now(), text, by: actor || undefined });
 
   const Store = {
     LEAD_STATUSES, MEMBER_STATUSES, VISIT_STATUSES, JOB_STATUSES, PARTNER_STATUSES, DEFAULT_SETTINGS,
@@ -156,13 +165,15 @@
     get settings() { return db.settings; },
     all(col) { return db[col]; },
     get(col, id) { return db[col].find(x => x.id === id); },
+    setActor(name) { actor = String(name || ''); },
 
     save(col, data) {
       let item = data.id && this.get(col, data.id);
       if (item) {
-        if (data.status && item.status && data.status !== item.status && item.activity) {
-          item.activity.push({ at: now(), text: `Status: ${item.status} → ${data.status}` });
-        }
+        const tracked = item.activity || col === 'members';
+        if (tracked && data.status && item.status && data.status !== item.status) log(item, `Status: ${item.status} → ${data.status}`);
+        if (col === 'members' && data.plan && item.plan && data.plan !== item.plan) log(item, `Plan: ${item.plan} → ${data.plan}`);
+        if (col === 'members' && data.billing && item.billing && data.billing !== item.billing) log(item, `Billing: ${item.billing} → ${data.billing}`);
         Object.assign(item, clean(data), { updatedAt: now() });
       } else {
         item = Object.assign({ id: uid(), createdAt: now() }, DEFAULTS[col](), clean(data));
@@ -186,7 +197,17 @@
     addNote(col, id, text) {
       const x = this.get(col, id);
       if (!x || !text.trim()) return;
-      (x.activity ||= []).push({ at: now(), text: text.trim(), note: true });
+      (x.activity ||= []).push({ id: uid(), at: now(), text: text.trim(), note: true, by: actor || undefined });
+      x.updatedAt = now();
+      save();
+    },
+
+    /* Notes written before notes had ids are matched by their timestamp. */
+    removeNote(col, id, noteId) {
+      const x = this.get(col, id);
+      if (!x?.activity) return;
+      x.activity = x.activity.filter(a => !(a.note && (a.id || a.at) === noteId));
+      x.updatedAt = now();
       save();
     },
 
@@ -216,11 +237,14 @@
     convertLead(leadId) {
       const l = this.get('leads', leadId);
       if (!l) return null;
+      // The request's notes (calls, what was agreed) carry over to the member's notes.
+      const history = (l.activity || []).filter(a => a.note).map(a => ({ ...a, id: a.id || uid(), text: `(request) ${a.text}` }));
+      history.push({ id: uid(), at: now(), text: `Became a member from the request received ${String(l.createdAt || '').slice(0, 10)}`, by: actor || undefined });
       const m = this.save('members', {
         name: l.name, email: l.email || '', phone: l.phone || '',
         livesIn: l.ownerLocation || '', propertyAddress: l.propertyLocation || '',
         propertyType: l.propertyType || '', audience: l.audience || '',
-        plan: l.interestedPlan || 'Recommended', leadId: l.id, notes: l.message || ''
+        plan: l.interestedPlan || 'Recommended', leadId: l.id, notes: l.message || '', activity: history
       });
       this.save('leads', { id: l.id, status: 'Won', memberId: m.id });
       return m;
@@ -260,6 +284,17 @@
           const col = k.split('_')[0];
           if (COLLECTIONS.includes(col) && Array.isArray(docs[k].items)) d[col].push(...docs[k].items);
         });
+        // A record can sit in two documents if a save was cut off while it moved shard
+        // (e.g. the old single "members" document): keep the most recently changed copy.
+        COLLECTIONS.forEach(c => {
+          const byId = new Map(), loose = [];
+          d[c].forEach(x => {
+            if (!x?.id) { loose.push(x); return; }
+            const prev = byId.get(x.id), t = (y) => String(y.updatedAt || y.createdAt || '');
+            if (!prev || t(x) >= t(prev)) byId.set(x.id, x);
+          });
+          d[c] = [...byId.values(), ...loose];
+        });
         db = normalise(d);
         keys.forEach(k => { lastWritten[k] = JSON.stringify(docs[k]); });
         try { localStorage.setItem(KEY, JSON.stringify(db)); } catch {}
@@ -291,7 +326,16 @@
       lead({ name: 'Mark Rossi', email: 'mark@example.com', source: 'Referral', ownerLocation: 'Toronto', propertyLocation: 'Athens Riviera', propertyType: 'Multiple units', audience: 'Investor', status: 'Won', createdAt: at(m2, 14) });
 
       const mem = (o) => { const m = Object.assign({ id: uid(), createdAt: now(), status: 'Active', billing: 'Monthly', reportChannel: 'WhatsApp', onboardingPaid: true }, o); db.members.push(m); return m; };
-      const a = mem({ name: 'Anna Georgiou', email: 'anna@example.com', phone: '+61 400 000 010', livesIn: 'Sydney', propertyAddress: 'Kolonaki, Athens', region: 'Athens', propertyType: 'Apartment', audience: 'Greek abroad', plan: 'Recommended', startDate: `${m3}-05`, keysHeld: true });
+      const renewal = new Date(Date.now() + 20 * 864e5).toISOString().slice(0, 10);
+      const a = mem({ name: 'Anna Georgiou', email: 'anna@example.com', phone: '+61 400 000 010', livesIn: 'Sydney', propertyAddress: 'Kolonaki, Athens', region: 'Athens', propertyType: 'Apartment', audience: 'Greek abroad', plan: 'Recommended', startDate: `${m3}-05`, keysHeld: true,
+        access: 'Building door code from the doorman. Spare key with her sister Maria.',
+        contacts: [
+          { id: uid(), name: 'Maria Georgiou', role: 'Family', phone: '+30 690 000 0031', email: '', notes: 'Sister, lives in Pangrati. Has the spare key.' },
+          { id: uid(), name: 'Kostas Doukas', role: 'Building manager', phone: '+30 210 000 0032', email: 'kostas@example.com', notes: 'Κοινόχρηστα are paid to him monthly.' }
+        ],
+        details: { floor: '3rd floor', size: '85', bedrooms: '2', bathrooms: '1', yearBuilt: '1974', heating: 'Central oil (building)', hotWater: 'Electric boiler (θερμοσίφωνας)',
+          waterValve: 'Under the kitchen sink', electricPanel: 'Hallway, next to the front door', electricity: 'ΔΕΗ, supply no. 1 23456789-01', building: 'Kostas Doukas, monthly', insuranceRenewal: renewal },
+        activity: [{ id: uid(), at: at(m3, 5), text: 'Onboarding call: wants WhatsApp reports with photos. Humidity worry in the bathroom.', note: true, by: 'Dimosthenis' }] });
       const b = mem({ name: 'Mark Rossi', email: 'mark@example.com', phone: '+1 416 555 0199', livesIn: 'Toronto', propertyAddress: 'Vouliagmeni villa', region: 'Athens Riviera', propertyType: 'Villa', audience: 'Investor', plan: 'Premium', billing: 'Annual', startDate: `${m2}-20`, keysHeld: true, reportChannel: 'Email' });
       const c = mem({ name: 'Claire Dubois', email: 'claire@example.com', livesIn: 'Lyon', propertyAddress: 'Stoupa', region: 'Kalamata & Costa Navarino', propertyType: 'House', audience: 'International owner', plan: 'Essential', startDate: `${m1}-03`, keysHeld: true });
       mem({ name: 'Peter Nikolaou', email: 'peter@example.com', livesIn: 'Boston', propertyAddress: 'Kalamaria, Thessaloniki', region: 'Thessaloniki', propertyType: 'Apartment', audience: 'Greek abroad', plan: 'Essential', status: 'Onboarding', startDate: `${m0}-15`, onboardingPaid: false });

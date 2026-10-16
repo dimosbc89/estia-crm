@@ -26,6 +26,7 @@
   const monthLabel = (key) => { const [y, m] = key.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }); };
   const monthShort = (key) => { const [y, m] = key.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'short' }); };
   const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 864e5);
+  const addDays = (iso, n) => { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); };
 
   const pill = (status, extra = '') => `<span class="pill s-${slug(status)}${extra}">${esc(status)}</span>`;
   const options = (list, selected, blank) =>
@@ -219,7 +220,7 @@
     return `
       <div class="section-title">Notes & activity</div>
       <div class="row" style="margin-bottom:10px"><input type="text" id="noteInput" placeholder="Called, sent proposal, waiting for keys…" style="flex:1"><button type="button" class="btn sm" id="noteAdd">Add note</button></div>
-      ${list.length ? `<ul class="activity">${list.map(a => `<li class="${a.note ? 'note' : ''}"><div class="when">${fmtDateTime(a.at)}</div>${esc(a.text)}</li>`).join('')}</ul>` : '<p class="muted small">No notes yet.</p>'}`;
+      ${list.length ? `<ul class="activity">${list.map(a => `<li class="${a.note ? 'note' : ''}"><div class="when">${fmtDateTime(a.at)}${a.by ? ` · ${esc(a.by)}` : ''}</div>${esc(a.text)}</li>`).join('')}</ul>` : '<p class="muted small">No notes yet.</p>'}`;
   }
   function bindNotes(root, col, id, reopen) {
     const add = () => { const v = $('#noteInput', root).value; if (!v.trim()) return; S.addNote(col, id, v); reopen(S.get(col, id)); };
@@ -238,8 +239,29 @@
     partnerFilter: 'Open',
     memberFilter: { q: '', status: 'Current' },
     workMonth: S.monthKey(),
-    reportMonth: S.monthKey()
+    reportMonth: S.monthKey(),
+    memberId: null,
+    noteDraft: {},        // unsent note text per member, kept across re-renders
+    notesAll: null        // member whose full note history is expanded
   };
+
+  /* Pages that show one record carry its id in the address (#member/<id>, #visit/<id>), so reloading or bookmarking works. */
+  function parseHash() {
+    const [view, arg] = location.hash.slice(1).split('/');
+    state.view = view || 'dashboard';
+    if (!arg) return;
+    const id = decodeURIComponent(arg);
+    if (view === 'member') state.memberId = id;
+    if (view === 'visit') state.visitId = id;
+    if (view === 'visitlog') state.logMember = id;
+  }
+  /* Go to a page, then run `then` once it is on screen (e.g. open a form on it). */
+  let afterNav = null;
+  function go(hash, then) {
+    if (location.hash === hash) { closeModal(); render(); then?.(); return; }
+    afterNav = then || null;
+    location.hash = hash;
+  }
 
   const views = {};
 
@@ -313,7 +335,12 @@
       ...S.all('visits').filter(v => v.status === 'Visited').map(v => ({ kind: 'visit', id: v.id, title: memberName(v.memberId), sub: `Send visit report (visited ${fmtDate(v.date)})`, tag: `<span class="pill ${daysBetween(v.date, today) > 1 ? 's-overdue' : 's-in-progress'}">Report due</span>`, sort: v.date })),
       ...S.all('visits').filter(v => v.status === 'Scheduled' && v.date && v.date < today).map(v => ({ kind: 'visit', id: v.id, title: memberName(v.memberId), sub: `Visit planned ${fmtDate(v.date)} not marked done`, tag: pill('Overdue'), sort: v.date })),
       ...S.all('jobs').filter(j => j.status === 'Requested').map(j => ({ kind: 'job', id: j.id, title: j.title, sub: `Send quote · ${memberName(j.memberId)}`, tag: pill('Requested'), sort: j.createdAt })),
-      ...S.all('partners').filter(p => p.status === 'New').map(p => ({ kind: 'partner', id: p.id, title: p.name, sub: `Partner application · ${p.track || ''}`, tag: pill('New'), sort: p.createdAt }))
+      ...S.all('partners').filter(p => p.status === 'New').map(p => ({ kind: 'partner', id: p.id, title: p.name, sub: `Partner application · ${p.track || ''}`, tag: pill('New'), sort: p.createdAt })),
+      // Home insurance renewing in the next 30 days (or passed in the last 30 and not updated yet).
+      ...S.all('members').filter(x => x.status !== 'Cancelled' && x.details?.insuranceRenewal >= addDays(today, -30) && x.details.insuranceRenewal <= addDays(today, 30)).map(x => {
+        const due = x.details.insuranceRenewal, past = due < today;
+        return { kind: 'member', id: x.id, title: x.name, sub: past ? `Insurance renewal date passed (${fmtDate(due)}): update it` : `Home insurance renews ${fmtDate(due)}`, tag: `<span class="pill ${past ? 's-overdue' : 's-in-progress'}">Insurance</span>`, sort: due };
+      })
     ].sort((a, b) => String(a.sort).localeCompare(String(b.sort)));
 
     const upcoming = S.all('visits').filter(v => v.status === 'Scheduled' && v.date >= today).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 7);
@@ -459,8 +486,7 @@
           const m = S.convertLead(l.id);
           if (!m.region) S.save('members', { id: m.id, region: guessRegion(m.propertyAddress) });
           toast('Member created — set plan & start date');
-          location.hash = '#members';
-          setTimeout(() => memberForm(member(m.id)), 0);
+          openMember(m.id, () => memberForm(member(m.id)));
         });
       }
     });
@@ -523,12 +549,16 @@
   }
 
   /* ================= members ================= */
+  // Search also finds a member by their contacts (spouse, key holder…) and property codes.
+  const memberHaystack = (m) => [m.name, m.email, m.phone, m.propertyAddress, m.region, m.livesIn,
+    ...(m.contacts || []).flatMap(c => [c.name, c.role, c.phone, c.email]), m.details?.atak, m.details?.kaek].join(' ').toLowerCase();
+
   views.members = () => {
     const f = state.memberFilter, q = f.q.trim().toLowerCase(), mk = S.monthKey();
     const all = S.all('members');
     const list = all.filter(m =>
       (f.status === 'All' || (f.status === 'Current' ? m.status !== 'Cancelled' : m.status === f.status)) &&
-      (!q || [m.name, m.email, m.phone, m.propertyAddress, m.region, m.livesIn].join(' ').toLowerCase().includes(q))
+      (!q || memberHaystack(m).includes(q))
     ).sort((a, b) => a.name.localeCompare(b.name));
     const counts = { All: all.length, Current: all.filter(m => m.status !== 'Cancelled').length };
     S.MEMBER_STATUSES.forEach(s => counts[s] = all.filter(m => m.status === s).length);
@@ -562,10 +592,9 @@
       </div>`;
   };
 
+  /* Membership and owner details. Everything else (contacts, property, notes, files) lives on the member page. */
   function memberForm(m = {}) {
     const isNew = !m.id, st = ST();
-    const visits = isNew ? [] : S.all('visits').filter(v => v.memberId === m.id).sort((a, b) => b.date.localeCompare(a.date));
-    const jobs = isNew ? [] : S.all('jobs').filter(j => j.memberId === m.id).sort((a, b) => b.month.localeCompare(a.month));
     const body = `
       <div class="fields">
         ${field('name', 'Name *', m.name, 'text', 'required')}
@@ -586,32 +615,467 @@
         ${field('onboardingPaid', `Onboarding fee paid (${money(st.onboardingFee)})`, m.onboardingPaid, 'checkbox')}
         ${field('keysHeld', 'Keys received', m.keysHeld, 'checkbox')}
         ${field('access', 'Access notes (alarm, building, neighbours)', m.access, 'textarea')}
-        ${field('notes', 'Notes', m.notes, 'textarea')}
+        ${field('notes', 'Summary (who they are, what they need)', m.notes, 'textarea')}
       </div>
-      ${!isNew ? `
-        <div class="section-title">Visits (${visits.length})</div>
-        ${visits.length ? `<ul class="list card">${visits.slice(0, 12).map(v => `<li class="clickable" data-open="visit:${v.id}"><span>${fmtDay(v.date)}${v.issues ? ` · <span class="muted">${esc(v.issues)}</span>` : ''}</span>${pill(v.status)}</li>`).join('')}</ul>` : '<p class="muted small">No visits yet.</p>'}
-        <div class="section-title">Add-on jobs (${jobs.length})</div>
-        ${jobs.length ? `<ul class="list card">${jobs.map(j => `<li class="clickable" data-open="job:${j.id}"><span>${esc(j.title)} · <span class="muted">${esc(monthLabel(j.month))}</span></span><span class="row">${money(num(j.price))} ${pill(j.status)}</span></li>`).join('')}</ul>` : '<p class="muted small">No add-on jobs yet.</p>'}` : ''}`;
+      ${isNew ? `<p class="muted small" style="margin:14px 0 0">After saving, the member's page opens: add contacts, property details, notes and files there.</p>` : ''}`;
     openModal({
-      title: isNew ? 'New member' : m.name, body, wide: !isNew,
-      foot: isNew ? '' : `<button type="button" class="btn danger" id="del">Delete</button>${contactButtons(m)}
-        <button type="button" class="btn" id="log">Visit log</button><button type="button" class="btn" id="addJob">+ Add-on job</button><button type="button" class="btn primary" id="logVisit">Log a visit</button>`,
+      title: isNew ? 'New member' : `Edit ${m.name}`, body,
+      submitLabel: isNew ? 'Add member' : 'Save',
+      foot: isNew ? '' : `<button type="button" class="btn danger" id="del">Delete member</button>`,
       onSave: (d) => {
         if (!d.name.trim()) { toast('Name is required'); return false; }
         if (d.status === 'Cancelled' && !d.endDate) d.endDate = todayISO();
-        S.save('members', { ...d, id: m.id });
+        const saved = S.save('members', { ...d, id: m.id });
         toast(isNew ? 'Member added' : 'Saved');
+        if (isNew) setTimeout(() => openMember(saved.id), 0);
       },
       bind: (root) => {
         const addr = root.elements.propertyAddress, reg = root.elements.region;
         addr.addEventListener('change', () => { if (!reg.value) reg.value = guessRegion(addr.value); });
-        $('#del', root)?.addEventListener('click', () => confirmBox(`Delete ${m.name} and all their visits?`, () => { S.remove('members', m.id); toast('Deleted'); }));
-        $('#log', root)?.addEventListener('click', () => { closeModal(); state.logMember = m.id; location.hash = '#visitlog'; });
-        $('#addJob', root)?.addEventListener('click', () => jobForm({ memberId: m.id, month: S.monthKey() }));
-        $('#logVisit', root)?.addEventListener('click', () => logVisitDialog(m.id));
+        $('#del', root)?.addEventListener('click', () => deleteMember(m));
       }
     });
+  }
+
+  function deleteMember(m) {
+    const visits = S.all('visits').filter(v => v.memberId === m.id).length;
+    const files = fileState[m.id]?.files?.length;
+    const parts = [visits ? `${visits} visit${visits === 1 ? '' : 's'}` : '', filesApi ? (files ? `${files} file${files === 1 ? '' : 's'}` : (files === 0 ? '' : 'their files')) : ''].filter(Boolean);
+    confirmBox(`Delete ${m.name}${parts.length ? ` together with ${parts.join(' and ')}` : ''}? This can't be undone.`, () => {
+      S.remove('members', m.id);
+      filesApi?.removeAll(m.id).catch(e => console.error('Could not delete the member’s files', e));
+      delete fileState[m.id];
+      toast('Member deleted');
+      setTimeout(() => go('#members'), 0);
+    }, 'Delete member');
+  }
+
+  /* ================= member page: membership, notes, files, contacts, property ================= */
+  const CONTACT_ROLES = ['Spouse / partner', 'Family', 'Key holder', 'Neighbour', 'Building manager', 'Property manager', 'Lawyer', 'Accountant', 'Notary', 'Tenant', 'Cleaner', 'Gardener', 'Pool service', 'Tradesperson', 'Insurance agent', 'Other'];
+  // Property details, saved on the member as `details`. [key, label, placeholder, hint, full width]
+  const DETAIL_GROUPS = [
+    ['The home', [
+      ['floor', 'Floor', 'e.g. 3rd floor'],
+      ['size', 'Size (m²)', 'e.g. 85', 'decimal'],
+      ['bedrooms', 'Bedrooms', '', 'numeric'],
+      ['bathrooms', 'Bathrooms', '', 'numeric'],
+      ['yearBuilt', 'Year built', 'e.g. 1998', 'numeric'],
+      ['parking', 'Parking / storage', 'e.g. spot 12, storage'],
+      ['outdoor', 'Outdoor', 'Balcony, garden, pool, irrigation…', '', true]
+    ]],
+    ['Systems', [
+      ['heating', 'Heating', 'e.g. heat pump', 'list:heating'],
+      ['hotWater', 'Hot water', 'e.g. θερμοσίφωνας', 'list:hotWater'],
+      ['waterValve', 'Water main valve', 'e.g. under the sink'],
+      ['electricPanel', 'Electric panel', 'e.g. by the front door'],
+      ['alarm', 'Alarm', 'Company, panel'],
+      ['wifi', 'Wi‑Fi / internet', 'Provider, router']
+    ]],
+    ['Utilities & building', [
+      ['electricity', 'Electricity', 'Provider, αρ. παροχής'],
+      ['water', 'Water', 'ΕΥΔΑΠ/ΔΕΥΑ, meter no.'],
+      ['gas', 'Gas', 'Provider, account'],
+      ['building', 'Building / κοινόχρηστα', 'Manager, how paid']
+    ]],
+    ['Records', [
+      ['atak', 'ΑΤΑΚ', 'Property tax no.'],
+      ['kaek', 'ΚΑΕΚ', 'Cadastre code'],
+      ['energyCert', 'Energy certificate (ΠΕΑ)', 'Class, expiry'],
+      ['insuranceRenewal', 'Home insurance renewal', '', 'date']
+    ]]
+  ];
+  const DETAIL_KEYS = DETAIL_GROUPS.flatMap(g => g[1].map(f => f[0])).concat('other');
+  const DETAIL_LABEL = Object.fromEntries(DETAIL_GROUPS.flatMap(g => g[1].map(f => [f[0], f[1]])).concat([['other', 'Other details']]));
+  const DATALISTS = {
+    heating: ['Central oil (building)', 'Central gas', 'Own oil boiler', 'Own gas boiler', 'Heat pump', 'Air-conditioners', 'Electric heaters', 'Fireplace / pellet stove', 'None'],
+    hotWater: ['Electric boiler (θερμοσίφωνας)', 'Solar + electric', 'Gas boiler', 'Heat pump', 'From central heating']
+  };
+
+  // Member files (Cloudflare version only): kept in R2, listed from the server, so this is a cache per member.
+  const FILE_EXTS = ['pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'pages', 'numbers', 'key', 'rtf', 'txt', 'csv', 'eml', 'msg', 'zip', 'mp4', 'mov', 'mp3', 'm4a'];
+  const MAX_FILE_MB = 95;
+  let filesApi = null;                 // set at boot when the CRM runs on Cloudflare
+  const fileState = {};                // memberId -> { status: loading|ready|uploading|error, files, at, note }
+  const fileExt = (name) => (String(name).match(/\.([a-z0-9]{1,8})$/i) || [])[1]?.toLowerCase() || '';
+  const fileKind = (name) => {
+    const e = fileExt(name);
+    return e === 'pdf' ? 'pdf' : /^(xlsx?|csv|ods|numbers)$/.test(e) ? 'sheet' : /^(docx?|odt|rtf|txt|pages)$/.test(e) ? 'doc'
+      : /^(jpe?g|png|webp|gif|heic|heif)$/.test(e) ? 'img' : /^(mp4|mov|mp3|m4a)$/.test(e) ? 'media' : 'other';
+  };
+  const fmtSize = (b) => b >= 1048576 ? `${(b / 1048576).toFixed(b >= 10485760 ? 0 : 1)} MB` : `${Math.max(1, Math.round((b || 0) / 1024))} KB`;
+  const fileUrl = (mid, f, download) => filesApi.url(mid, f.id) + (download ? '?download=1' : '');
+  const telHref = (p) => 'tel:' + String(p).replace(/[^\d+]/g, '');
+
+  function openMember(id, then) { state.memberId = id; go('#member/' + encodeURIComponent(id), then); }
+
+  views.member = () => {
+    const m = member(state.memberId);
+    if (!m) return S.syncStatus === 'loading' ? `<div class="empty">Loading…</div>` : `<div class="empty">This member could not be found. <a href="#members">Back to members</a></div>`;
+    return `
+      <div class="page-head">
+        <div><h1>${esc(m.name)}</h1><div class="sub">${esc([m.propertyAddress, m.region, m.propertyType].filter(Boolean).join(' · ') || 'Property address not added yet')}</div></div>
+        <div class="row"><a class="btn ghost" href="#members">← Members</a>${contactButtons(m)}<button class="btn" data-act="edit-member">Edit</button><button class="btn primary" data-act="member-log-visit">Log a visit</button></div>
+      </div>
+      <div class="member-grid">
+        <div class="mcol">${memberNotesCard(m)}${memberFilesCard(m)}${memberVisitsCard(m)}${memberJobsCard(m)}</div>
+        <div class="mcol">${membershipCard(m)}${memberContactsCard(m)}${memberPropertyCard(m)}</div>
+      </div>`;
+  };
+
+  /* Definition list of label/value pairs; empty values are left out. [label, value, valueIsHTML] */
+  function factRows(rows) {
+    rows = rows.filter(r => r[1] !== undefined && r[1] !== null && r[1] !== '');
+    return rows.length ? `<dl class="facts">${rows.map(([k, v, html]) => `<div><dt>${esc(k)}</dt><dd>${html ? v : esc(v)}</dd></div>`).join('')}</dl>` : '';
+  }
+
+  function membershipCard(m) {
+    const lead = m.leadId && S.get('leads', m.leadId);
+    return `
+      <section class="card mcard m-membership">
+        <div class="card-head"><h2>Membership</h2>${pill(m.status || 'Onboarding')}</div>
+        ${factRows([
+          ['Plan', `${esc(m.plan || '—')} · ${esc(m.billing || 'Monthly')} <span class="muted">· ${money(S.memberMRR(m))}/mo</span>`, true],
+          ['Member since', m.startDate ? fmtDate(m.startDate) + (m.endDate ? ' – ' + fmtDate(m.endDate) : '') : ''],
+          ['Onboarding fee', m.onboardingPaid ? 'Paid' : 'Not paid yet'],
+          ['Keys', m.keysHeld ? 'Received' : 'Not received yet'],
+          ['Reports by', m.reportChannel || 'WhatsApp'],
+          ['Owner type', m.audience],
+          ['Lives in', m.livesIn],
+          ['Home insurer', m.insurer],
+          ['Email', m.email ? `<a href="mailto:${esc(m.email)}">${esc(m.email)}</a>` : '', true],
+          ['Phone', m.phone ? `<a href="${esc(telHref(m.phone))}">${esc(m.phone)}</a>` : '', true]
+        ])}
+        ${m.notes ? `<div class="m-block"><div class="m-label">Summary</div><p class="pre">${esc(m.notes)}</p></div>` : ''}
+        ${lead ? `<div class="m-block small muted">Became a member from the request received ${fmtDate(lead.createdAt)} · <a href="#" data-open="lead:${lead.id}">Open request</a></div>` : ''}
+      </section>`;
+  }
+
+  const NOTES_SHOWN = 15;
+  function memberNotesCard(m) {
+    const all = (m.activity || []).slice().sort((a, b) => String(b.at).localeCompare(String(a.at)));
+    const list = state.notesAll === m.id ? all : all.slice(0, NOTES_SHOWN);
+    const count = all.filter(a => a.note).length;
+    return `
+      <section class="card mcard m-notes" id="notesCard">
+        <div class="card-head"><h2>Notes</h2><span class="muted small">${count} note${count === 1 ? '' : 's'}</span></div>
+        <div class="card-pad note-add">
+          <textarea id="mNoteText" rows="3" aria-label="New note" placeholder="e.g. Spoke with the owner: boiler service due in March, prefers WhatsApp voice notes">${esc(state.noteDraft[m.id] || '')}</textarea>
+          <div class="row"><span class="muted small kbd-hint">Ctrl / ⌘ + Enter to add</span><span class="spacer"></span><button type="button" class="btn primary sm" data-act="member-add-note">Add note</button></div>
+        </div>
+        ${list.length ? `<ul class="activity m-activity">${list.map(a => `
+          <li class="${a.note ? 'note' : ''}">
+            <div class="when">${fmtDateTime(a.at)}${a.by ? ` · ${esc(a.by)}` : ''}</div>
+            <div class="pre">${esc(a.text)}</div>
+            ${a.note ? `<button type="button" class="note-del" data-note-del="${esc(a.id || a.at)}" aria-label="Delete this note" title="Delete note">✕</button>` : ''}
+          </li>`).join('')}</ul>
+          ${all.length > list.length ? `<div class="card-pad" style="padding-top:0"><button type="button" class="btn sm" data-act="member-all-notes">Show ${all.length - list.length} older</button></div>` : ''}`
+        : `<p class="muted small card-pad" style="margin:0;padding-top:0">No notes yet. Calls, agreements, things to remember: each note keeps its date and who wrote it.</p>`}
+      </section>`;
+  }
+
+  function memberFilesCard(m) {
+    const st = fileState[m.id] || { status: filesApi ? 'loading' : 'off', files: [] };
+    const files = st.files || [];
+    const head = st.status === 'loading' && !files.length ? 'Loading…' : st.status === 'uploading' ? 'Uploading…' : `${files.length} file${files.length === 1 ? '' : 's'}`;
+    return `
+      <section class="card mcard m-files" id="filesCard">
+        <div class="card-head"><h2>Files</h2><span class="muted small">${head}</span></div>
+        ${filesApi ? `
+          <div class="card-pad drop-zone">
+            <label class="btn primary upload-btn"><input type="file" id="fileInput" accept="${FILE_EXTS.map(e => '.' + e).join(',')}" multiple hidden>＋ Upload files</label>
+            <span class="muted small drop-hint">or drag files here</span>
+            <p class="muted small" style="margin:0">Past reports, contracts, spreadsheets, photos: PDF, Word, Excel, images and more, up to ${MAX_FILE_MB} MB each.</p>
+            <div id="fileStatus" class="small" aria-live="polite">${esc(st.note || '')}</div>
+          </div>
+          ${st.status === 'error' ? `<p class="small card-pad" style="padding-top:0;margin:0">The file list could not be loaded. <button type="button" class="btn sm" data-act="member-files-retry">Try again</button></p>` : ''}
+          ${files.length ? `<ul class="list files-list">${files.map(f => fileRow(m.id, f)).join('')}</ul>` : ''}`
+        : `<p class="muted small card-pad" style="margin:0">Files can be uploaded in the online CRM (crm.estiagreekhome.online).</p>`}
+      </section>`;
+  }
+  function fileRow(mid, f) {
+    const url = fileUrl(mid, f);
+    const icon = /\.(jpe?g|png|webp|gif)$/i.test(f.name)
+      ? `<img class="fthumb" src="${url}" alt="" loading="lazy">`
+      : `<span class="ficon k-${fileKind(f.name)}" aria-hidden="true">${esc((fileExt(f.name) || 'file').slice(0, 4).toUpperCase())}</span>`;
+    return `<li>
+      ${icon}
+      <div class="fmeta"><a class="fname" href="${url}" target="_blank" rel="noopener">${esc(f.name)}</a>
+        <div class="muted small">${fmtSize(f.size)} · ${fmtDate(f.uploadedAt)}${f.by ? ` · ${esc(String(f.by).split('@')[0])}` : ''}</div></div>
+      <span class="row nowrap factions">
+        <a class="btn sm ghost" href="${fileUrl(mid, f, true)}" download="${esc(f.name)}" aria-label="Download ${esc(f.name)}" title="Download">↓</a>
+        <button type="button" class="btn sm ghost danger" data-file-del="${esc(f.id)}" aria-label="Delete ${esc(f.name)}" title="Delete">✕</button>
+      </span>
+    </li>`;
+  }
+
+  function memberContactsCard(m) {
+    const contacts = m.contacts || [];
+    const actionsFor = (x) => (x.phone || x.email) ? `<span class="row nowrap cactions" data-stop>
+      ${x.phone ? `<a class="btn sm" href="${esc(telHref(x.phone))}">Call</a><a class="btn sm" href="${esc(waLink(x.phone))}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
+      ${x.email ? `<a class="btn sm" href="mailto:${esc(x.email)}">Email</a>` : ''}</span>` : '';
+    const row = (x, open, role) => `
+      <li class="clickable" data-open="${open}">
+        <div class="cmeta"><div class="name">${esc(x.name)}${role ? ` <span class="pill s-muted">${esc(role)}</span>` : ''}</div>
+          ${x.phone || x.email ? `<div class="muted small">${esc([x.phone, x.email].filter(Boolean).join(' · '))}</div>` : ''}
+          ${x.notes && open.startsWith('contact') ? `<div class="muted small pre">${esc(x.notes)}</div>` : ''}</div>
+        ${actionsFor(x)}
+      </li>`;
+    return `
+      <section class="card mcard m-contacts">
+        <div class="card-head"><h2>Contacts</h2><button type="button" class="btn sm" data-act="member-add-contact">+ Add contact</button></div>
+        <ul class="list contacts-list">
+          ${row(m, 'member-edit:' + m.id, 'Owner')}
+          ${contacts.map(c => row(c, 'contact:' + c.id, c.role)).join('')}
+        </ul>
+        ${contacts.length ? '' : `<p class="muted small card-pad" style="margin:0;padding-top:0">Add family, key holders, neighbours, the building manager, lawyer or accountant.</p>`}
+      </section>`;
+  }
+
+  function contactForm(m, c = {}) {
+    if (!m) return;
+    const isNew = !c.id;
+    openModal({
+      title: isNew ? `New contact · ${m.name}` : c.name,
+      body: `<div class="fields">
+          ${field('name', 'Name *', c.name, 'text', 'required')}
+          <label class="field"><span>Role</span><input type="text" name="role" list="contactRoles" value="${esc(c.role || '')}" placeholder="e.g. Key holder, Lawyer"></label>
+          ${field('phone', 'Phone / WhatsApp', c.phone, 'tel')}
+          ${field('email', 'Email', c.email, 'email')}
+          ${field('notes', 'Notes', c.notes, 'textarea', 'placeholder="e.g. Has a spare key, available weekdays after 5"')}
+        </div>
+        <datalist id="contactRoles">${CONTACT_ROLES.map(r => `<option value="${esc(r)}">`).join('')}</datalist>`,
+      submitLabel: isNew ? 'Add contact' : 'Save',
+      foot: isNew ? '' : `<button type="button" class="btn danger" id="delContact">Remove contact</button>`,
+      onSave: (d) => {
+        if (!d.name.trim()) { toast('Name is required'); return false; }
+        const item = { id: c.id || S.uid(), name: d.name.trim(), role: d.role.trim(), phone: d.phone.trim(), email: d.email.trim(), notes: d.notes.trim() };
+        const list = [...(member(m.id)?.contacts || [])];
+        const i = list.findIndex(x => x.id === item.id);
+        if (i >= 0) list[i] = item; else list.push(item);
+        S.save('members', { id: m.id, contacts: list });
+        toast(isNew ? 'Contact added' : 'Saved');
+      },
+      bind: (root) => {
+        $('#delContact', root)?.addEventListener('click', () => confirmBox(`Remove ${c.name} from ${m.name}'s contacts?`, () => {
+          S.save('members', { id: m.id, contacts: (member(m.id)?.contacts || []).filter(x => x.id !== c.id) });
+          toast('Contact removed');
+        }, 'Remove'));
+      }
+    });
+  }
+
+  function memberPropertyCard(m) {
+    const d = m.details || {}, st = ST();
+    const filled = DETAIL_KEYS.filter(k => d[k]).length;
+    const input = ([k, label, ph, hint, full]) => {
+      const list = hint?.startsWith('list:') ? ` list="dl-${hint.slice(5)}"` : '';
+      const mode = hint === 'decimal' || hint === 'numeric' ? ` inputmode="${hint}"` : '';
+      return `<label class="field${full ? ' full' : ''}"><span>${esc(label)}</span><input type="${hint === 'date' ? 'date' : 'text'}" data-md="${k}" value="${esc(d[k] || '')}" placeholder="${esc(ph || '')}"${mode}${list}></label>`;
+    };
+    return `
+      <section class="card mcard m-property">
+        <div class="card-head"><h2>Property details</h2><span class="row"><span class="saved-flag" aria-live="polite"></span><span class="muted small">${filled} of ${DETAIL_KEYS.length} filled</span></span></div>
+        <div class="card-pad">
+          <p class="muted small" style="margin:0 0 14px">Changes save automatically.</p>
+          <div class="fields">
+            <label class="field full"><span>Address</span><input type="text" data-mf="propertyAddress" value="${esc(m.propertyAddress || '')}" placeholder="Street, number, area"></label>
+            <label class="field"><span>Region</span><select data-mf="region">${options(st.regions, m.region, '— choose —')}</select></label>
+            <label class="field"><span>Property type</span><select data-mf="propertyType">${options(st.propertyTypes, m.propertyType, '— choose —')}</select></label>
+            <label class="field full"><span>Access notes</span><textarea data-mf="access" rows="2" placeholder="Building entry, alarm, which neighbour has a key…">${esc(m.access || '')}</textarea></label>
+          </div>
+          ${DETAIL_GROUPS.map(([title, fields]) => `<div class="section-title">${esc(title)}</div><div class="fields">${fields.map(input).join('')}</div>`).join('')}
+          <div class="section-title">Anything else</div>
+          <label class="field full"><span class="sr-only">Other details</span><textarea data-md="other" rows="3" placeholder="Appliances, recent works, known issues, where the spare bulbs are…">${esc(d.other || '')}</textarea></label>
+          ${Object.entries(DATALISTS).map(([k, list]) => `<datalist id="dl-${k}">${list.map(o => `<option value="${esc(o)}">`).join('')}</datalist>`).join('')}
+        </div>
+      </section>`;
+  }
+
+  function memberVisitsCard(m) {
+    const visits = S.all('visits').filter(v => v.memberId === m.id).sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+    return `
+      <section class="card mcard m-visits">
+        <div class="card-head"><h2>Visits</h2><span class="row"><span class="muted small">${visits.length}</span><button type="button" class="btn sm" data-act="member-visit-log">Visit log</button></span></div>
+        ${visits.length ? `<ul class="list">${visits.slice(0, 8).map(v => `<li class="clickable" data-open="visit:${v.id}"><span>${fmtDay(v.date)}${v.issues ? ` · <span class="muted">${esc(v.issues)}</span>` : ''}</span>${pill(v.status)}</li>`).join('')}</ul>
+          ${visits.length > 8 ? `<p class="muted small card-pad" style="margin:0">The latest 8 are shown. The visit log has the full history.</p>` : ''}`
+        : '<p class="muted small card-pad" style="margin:0">No visits yet.</p>'}
+      </section>`;
+  }
+
+  function memberJobsCard(m) {
+    const jobs = S.all('jobs').filter(j => j.memberId === m.id).sort((a, b) => (b.month || '').localeCompare(a.month || ''));
+    return `
+      <section class="card mcard m-jobs">
+        <div class="card-head"><h2>Add-on jobs</h2><button type="button" class="btn sm" data-act="member-add-job">+ Add-on job</button></div>
+        ${jobs.length ? `<ul class="list">${jobs.map(j => `<li class="clickable" data-open="job:${j.id}"><span>${esc(j.title)} · <span class="muted">${esc(j.month ? monthLabel(j.month) : '')}</span></span><span class="row">${money(num(j.price))} ${pill(j.status)}</span></li>`).join('')}</ul>`
+        : '<p class="muted small card-pad" style="margin:0">No add-on jobs yet.</p>'}
+      </section>`;
+  }
+
+  function addMemberNote() {
+    const ta = $('#mNoteText'), m = member(state.memberId);
+    if (!ta || !m) return;
+    const text = ta.value.trim();
+    if (!text) { toast('Write the note first'); ta.focus(); return; }
+    S.addNote('members', m.id, text);
+    state.noteDraft[m.id] = '';
+    render();
+    $('#mNoteText')?.focus();
+    toast('Note added');
+  }
+
+  /* ---- member files ---- */
+  function ensureFiles(mid, force) {
+    if (!filesApi || !mid) return;
+    const st = fileState[mid];
+    if (st && (st.status === 'loading' || st.status === 'uploading')) return;
+    if (st && !force && st.status === 'ready' && Date.now() - st.at < 60000) return;   // refresh at most once a minute
+    fileState[mid] = { files: [], ...st, status: 'loading' };
+    filesApi.list(mid)
+      .then(files => { fileState[mid] = { ...fileState[mid], status: 'ready', files, at: Date.now() }; })
+      .catch(e => { console.error(e); fileState[mid] = { ...fileState[mid], status: 'error' }; })
+      .finally(() => refreshFilesCard(mid));
+  }
+
+  /* Redraw only the Files card, so a note being typed or a property field in focus is not disturbed. */
+  function refreshFilesCard(mid) {
+    if (state.view !== 'member' || state.memberId !== mid) return;
+    const card = $('#filesCard'), m = member(mid);
+    if (!card || !m) return;
+    card.outerHTML = memberFilesCard(m);
+    bindFilesCard();
+  }
+
+  function bindFilesCard() {
+    const card = $('#filesCard'), input = $('#fileInput');
+    if (!card || !filesApi) return;
+    input?.addEventListener('change', () => { if (input.files.length) uploadFiles(state.memberId, [...input.files]); });
+    const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+    const over = (e) => { if (hasFiles(e)) { e.preventDefault(); card.classList.add('dragging'); } };
+    card.addEventListener('dragenter', over);
+    card.addEventListener('dragover', over);
+    card.addEventListener('dragleave', (e) => { if (!card.contains(e.relatedTarget)) card.classList.remove('dragging'); });
+    card.addEventListener('drop', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); e.stopPropagation(); card.classList.remove('dragging');
+      if (e.dataTransfer.files.length) uploadFiles(state.memberId, [...e.dataTransfer.files]);
+    });
+  }
+  // A file dropped next to the Files card must not replace the CRM with the file.
+  ['dragover', 'drop'].forEach(type => window.addEventListener(type, (e) => {
+    if (state.view === 'member' && [...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault();
+  }));
+  window.addEventListener('beforeunload', (e) => {
+    if (Object.values(fileState).some(s => s.status === 'uploading')) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  const FILE_ERRORS = {
+    too_large: `is over ${MAX_FILE_MB} MB.`,
+    unsupported_type: 'is a file type that can’t be stored. Use PDF, Word, Excel, images, text, ZIP or video.',
+    empty: 'is empty.',
+    network: 'was not uploaded: check the connection and try again.'
+  };
+  async function uploadFiles(mid, list) {
+    if (!filesApi || !list.length) return;
+    const st = fileState[mid] || (fileState[mid] = { status: 'ready', files: [], at: 0 });
+    if (st.status === 'uploading') { toast('Wait for the current upload to finish'); return; }
+    st.status = 'uploading';
+    const failures = [];
+    let ok = 0;
+    const note = (text) => { st.note = text; const el = $('#fileStatus'); if (el && state.view === 'member' && state.memberId === mid) el.textContent = text; };
+    refreshFilesCard(mid);
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      if (!FILE_EXTS.includes(fileExt(f.name))) { failures.push(`${f.name} ${FILE_ERRORS.unsupported_type}`); continue; }
+      if (f.size > MAX_FILE_MB * 1048576) { failures.push(`${f.name} ${FILE_ERRORS.too_large}`); continue; }
+      if (!f.size) { failures.push(`${f.name} ${FILE_ERRORS.empty}`); continue; }
+      const label = (list.length > 1 ? `Uploading ${i + 1} of ${list.length}: ` : 'Uploading ') + f.name;
+      note(label + '…');
+      try {
+        const file = await filesApi.upload(mid, f, (p) => note(`${label} · ${Math.round(p * 100)}%`));
+        st.files = [file, ...st.files.filter(x => x.id !== file.id)];
+        ok++;
+        refreshFilesCard(mid);
+      } catch (e) {
+        console.error(e);
+        failures.push(`${f.name} ${FILE_ERRORS[e?.code] || 'could not be uploaded.'}`);
+      }
+    }
+    st.status = 'ready'; st.at = Date.now();
+    st.note = failures.join(' ');
+    refreshFilesCard(mid);
+    toast(failures.length ? `${ok} of ${list.length} uploaded` : `${ok} file${ok === 1 ? '' : 's'} uploaded`);
+  }
+
+  function deleteFile(mid, id) {
+    const st = fileState[mid], f = st?.files.find(x => x.id === id);
+    if (!f) return;
+    confirmBox(`Delete “${f.name}” permanently?`, () => {
+      st.files = st.files.filter(x => x.id !== id);
+      filesApi.remove(mid, id).then(() => toast('File deleted')).catch(e => {
+        console.error(e);
+        st.files = [f, ...st.files];
+        refreshFilesCard(mid);
+        toast('The file could not be deleted. Try again.');
+      });
+    });
+  }
+
+  function bindMemberView() {
+    if (state.view !== 'member') return;
+    const m = member(state.memberId);
+    if (!m) return;
+    bindFilesCard();
+    ensureFiles(m.id);
+    const ta = $('#mNoteText');
+    ta?.addEventListener('input', () => { state.noteDraft[m.id] = ta.value; });
+    ta?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); addMemberNote(); } });
+  }
+
+  // Property fields on the member page save as soon as they change.
+  document.addEventListener('change', (e) => {
+    if (state.view !== 'member') return;
+    const t = e.target, m = member(state.memberId);
+    if (!m || !(t.dataset.md || t.dataset.mf)) return;
+    if (t.dataset.md) {
+      S.save('members', { id: m.id, details: { ...(m.details || {}), [t.dataset.md]: t.value.trim() } });
+    } else {
+      const patch = { id: m.id, [t.dataset.mf]: t.value.trim() };
+      if (t.dataset.mf === 'propertyAddress' && !m.region) {
+        const r = guessRegion(t.value);
+        const sel = $('[data-mf="region"]');
+        if (r && sel) { patch.region = r; sel.value = r; }
+      }
+      S.save('members', patch);
+      const sub = $('.page-head .sub'), cur = member(m.id);
+      if (sub) sub.textContent = [cur.propertyAddress, cur.region, cur.propertyType].filter(Boolean).join(' · ') || 'Property address not added yet';
+    }
+    const flag = t.closest('.mcard')?.querySelector('.saved-flag');
+    if (flag) { flag.textContent = 'Saved'; flag.classList.add('on'); clearTimeout(flag._t); flag._t = setTimeout(() => flag.classList.remove('on'), 1600); }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (state.view !== 'member') return;
+    const t = e.target;
+    const nd = t.closest('[data-note-del]');
+    if (nd) { confirmBox('Delete this note?', () => { S.removeNote('members', state.memberId, nd.dataset.noteDel); toast('Note deleted'); }); return; }
+    const fd = t.closest('[data-file-del]');
+    if (fd) deleteFile(state.memberId, fd.dataset.fileDel);
+  });
+
+  /* Shown (folded) on the visit report: what the person on site needs about this property. */
+  function onsiteInfo(m) {
+    if (!m?.id) return '';
+    const d = m.details || {};
+    const contacts = (m.contacts || []).filter(c => c.phone);
+    return `<details class="card vr-section onsite">
+      <summary class="card-head"><h2>Property info</h2><span class="muted small">Access, valves, contacts</span></summary>
+      ${factRows([['Keys', m.keysHeld ? 'Received' : 'Not received'], ['Access', m.access], ['Alarm', d.alarm], ['Water main valve', d.waterValve],
+        ['Electric panel', d.electricPanel], ['Wi‑Fi / internet', d.wifi], ['Parking / storage', d.parking], ['Heating', d.heating], ['Hot water', d.hotWater]])}
+      ${contacts.length ? `<ul class="list">${contacts.map(c => `<li><span><b>${esc(c.name)}</b>${c.role ? ` <span class="muted small">${esc(c.role)}</span>` : ''}</span>
+        <span class="row nowrap"><a class="btn sm" href="${esc(telHref(c.phone))}">Call</a><a class="btn sm" href="${esc(waLink(c.phone))}" target="_blank" rel="noopener">WhatsApp</a></span></li>`).join('')}</ul>` : ''}
+      <div class="card-pad"><a href="#member/${encodeURIComponent(m.id)}">Open ${esc(m.name)}'s member page</a></div>
+    </details>`;
   }
 
   /* Printable visit log per member — the "insurance-grade visit log" promised on the plans page. */
@@ -623,7 +1087,7 @@
     return `
       <div class="page-head no-print">
         <div><h1>Visit log</h1><div class="sub">Printable record of documented visits — useful for insurers.</div></div>
-        <div class="row"><a class="btn ghost" href="#members">← Members</a>
+        <div class="row"><a class="btn ghost" href="#member/${encodeURIComponent(m.id)}">← ${esc(m.name)}</a>
           <select id="logYear">${options([0, 1, 2].map(i => String(new Date().getFullYear() - i)), year)}</select>
           <button class="btn primary" data-act="print-log">${printLabel()}</button></div>
       </div>
@@ -947,13 +1411,13 @@
   };
 
   /* ================= render & routing ================= */
-  const TITLES = { visit: 'Visit report', dashboard: 'Dashboard', leads: 'Requests', members: 'Members', month: 'Monthly work', partners: 'Partners', reports: 'Reports', settings: 'Settings', visitlog: 'Visit log' };
+  const TITLES = { visit: 'Visit report', dashboard: 'Dashboard', leads: 'Requests', members: 'Members', member: 'Member', month: 'Monthly work', partners: 'Partners', reports: 'Reports', settings: 'Settings', visitlog: 'Visit log' };
 
   function render() {
     const view = views[state.view] ? state.view : 'dashboard';
     main.innerHTML = views[view]();
     $$('#nav a').forEach(a => {
-      const on = a.dataset.view === view || (view === 'visitlog' && a.dataset.view === 'members') || (view === 'visit' && a.dataset.view === 'month');
+      const on = a.dataset.view === view || ((view === 'visitlog' || view === 'member') && a.dataset.view === 'members') || (view === 'visit' && a.dataset.view === 'month');
       a.classList.toggle('active', on);
       on ? a.setAttribute('aria-current', 'page') : a.removeAttribute('aria-current');
     });
@@ -964,12 +1428,13 @@
     decorateHeading(view);
     revealActive();
     focusableRows(main);
-    document.title = `${TITLES[view]} · Estia CRM`;
+    document.title = `${view === 'member' ? member(state.memberId)?.name || TITLES.member : TITLES[view]} · Estia CRM`;
     bindVisitView();
+    bindMemberView();
   }
 
   /* Site-style headings: a red "—— EYEBROW" line and the last word of the title in red italics. */
-  const EYEBROWS = { dashboard: 'Today', leads: 'Pipeline', members: 'Memberships', month: 'On the ground', partners: 'Trades & referrals',
+  const EYEBROWS = { dashboard: 'Today', leads: 'Pipeline', members: 'Memberships', member: 'Member file', month: 'On the ground', partners: 'Trades & referrals',
     reports: 'Performance', settings: 'Prices & lists', visit: 'On site', visitlog: 'Records' };
   // One-word page names get a two-word title so they also carry the red italic accent (menu labels and tab titles stay short).
   const TITLE_ACCENT = { leads: 'Discovery requests', members: 'Our members', partners: 'Partner network', reports: 'Monthly reports', settings: 'Workspace settings' };
@@ -1018,8 +1483,11 @@
       download(`estia-requests-${todayISO()}.csv`, toCSV(rows), 'text/csv');
     },
     'export-members': () => {
-      const rows = [['Name', 'Email', 'Phone', 'Lives in', 'Property', 'Region', 'Type', 'Plan', 'Billing', 'Per month', 'Start', 'End', 'Status', 'Keys', 'Onboarding paid']];
-      S.all('members').forEach(m => rows.push([m.name, m.email, m.phone, m.livesIn, m.propertyAddress, m.region, m.propertyType, m.plan, m.billing, S.memberMRR(m).toFixed(2), m.startDate, m.endDate, m.status, m.keysHeld ? 'Yes' : 'No', m.onboardingPaid ? 'Yes' : 'No']));
+      const rows = [['Name', 'Email', 'Phone', 'Lives in', 'Property', 'Region', 'Type', 'Plan', 'Billing', 'Per month', 'Start', 'End', 'Status', 'Keys', 'Onboarding paid',
+        'Insurer', 'Access notes', 'Summary', 'Contacts', ...DETAIL_KEYS.map(k => DETAIL_LABEL[k])]];
+      S.all('members').forEach(m => rows.push([m.name, m.email, m.phone, m.livesIn, m.propertyAddress, m.region, m.propertyType, m.plan, m.billing, S.memberMRR(m).toFixed(2), m.startDate, m.endDate, m.status, m.keysHeld ? 'Yes' : 'No', m.onboardingPaid ? 'Yes' : 'No',
+        m.insurer, m.access, m.notes, (m.contacts || []).map(c => [c.name, c.role && `(${c.role})`, c.phone, c.email].filter(Boolean).join(' ')).join('; '),
+        ...DETAIL_KEYS.map(k => m.details?.[k] || '')]));
       download(`estia-members-${todayISO()}.csv`, toCSV(rows), 'text/csv');
     },
     'export-report': () => {
@@ -1047,11 +1515,24 @@
 
   const openers = {
     lead: (id) => leadForm(S.get('leads', id)),
-    member: (id) => memberForm(member(id)),
+    member: (id) => openMember(id),
+    'member-edit': (id) => memberForm(member(id)),
+    contact: (id) => { const m = member(state.memberId); contactForm(m, (m?.contacts || []).find(c => c.id === id)); },
     visit: (id) => openVisit(id),
     job: (id) => jobForm(S.get('jobs', id)),
     partner: (id) => partnerForm(S.get('partners', id))
   };
+
+  Object.assign(actions, {
+    'edit-member': () => memberForm(member(state.memberId)),
+    'member-log-visit': () => logVisitDialog(state.memberId),
+    'member-add-job': () => jobForm({ memberId: state.memberId, month: S.monthKey() }),
+    'member-add-contact': () => contactForm(member(state.memberId)),
+    'member-visit-log': () => go('#visitlog/' + encodeURIComponent(state.memberId)),
+    'member-add-note': () => addMemberNote(),
+    'member-all-notes': () => { state.notesAll = state.memberId; render(); },
+    'member-files-retry': () => ensureFiles(state.memberId, true)
+  });
 
   /* ================= visit report (filled in on site, on a phone) ================= */
   const CHECK = { ok: 'OK', issue: 'Issue', na: 'N/A' };
@@ -1063,7 +1544,7 @@
 
   function openVisit(id) {
     state.visitId = id;
-    if (location.hash === '#visit') render(); else location.hash = '#visit';
+    go('#visit/' + encodeURIComponent(id));
   }
 
   /* Keep the plain-text issue summary (used by dashboard, reports, visit log) in step with the problem list. */
@@ -1094,9 +1575,10 @@
     const probOpts = (sel) => `<option value="">— not linked —</option>` + problems.map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.text.slice(0, 40))}</option>`).join('');
     return `
       <div class="page-head">
-        <div><h1>Visit report</h1><div class="sub">${esc(m.name || '—')} · ${esc(m.propertyAddress || m.region || '')}</div></div>
+        <div><h1>Visit report</h1><div class="sub">${m.id ? `<a href="#member/${encodeURIComponent(m.id)}">${esc(m.name)}</a>` : '—'} · ${esc(m.propertyAddress || m.region || '')}</div></div>
         <div class="row"><a class="btn ghost" href="#month">← Monthly work</a><button class="btn" data-act="edit-visit">Edit visit</button><button class="btn primary" data-act="prepare-report">Prepare client report</button></div>
       </div>
+      ${onsiteInfo(m)}
 
       <section class="card card-pad vr-section">
         <div class="vr-grid">
@@ -1600,10 +2082,14 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
     if (e.key === 'n' && !modal.open && !e.target.closest('input, textarea, select') && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); leadForm(); }
   });
 
-  window.addEventListener('hashchange', () => { state.view = location.hash.slice(1) || 'dashboard'; closeModal(); render(); window.scrollTo(0, 0); });
+  window.addEventListener('hashchange', () => {
+    Object.values(fileState).forEach(s => { if (s.status !== 'uploading') s.note = ''; });   // old upload messages
+    parseHash(); closeModal(); render(); window.scrollTo(0, 0);
+    const then = afterNav; afterNav = null; then?.();
+  });
   window.addEventListener('storage', () => render());
 
-  state.view = location.hash.slice(1) || 'dashboard';
+  parseHash();
   render();
 
   /* ---- sync status + Claude account storage ---- */
@@ -1638,6 +2124,34 @@ ${skippedVideos ? `<p class="meta">${skippedVideos} more video${skippedVideos ==
       upload: (blob, { type }) => call('/media', { method: 'POST', body: blob, headers: { 'Content-Type': type } }),
       delete: (id) => call('/media/' + id, { method: 'DELETE' })
     };
+    // Member files: listed from R2 by the server. Uploads use XHR for a progress percentage.
+    const fq = (mid) => '/files?member=' + encodeURIComponent(mid);
+    filesApi = {
+      list: async (mid) => (await call(fq(mid))).files || [],
+      remove: (mid, id) => call(`/files/${encodeURIComponent(mid)}/${id}`, { method: 'DELETE' }),
+      removeAll: (mid) => call(fq(mid), { method: 'DELETE' }),
+      url: (mid, id) => `${API}/files/${encodeURIComponent(mid)}/${id}`,
+      upload: (mid, file, onProgress) => new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', API + fq(mid));
+        xhr.setRequestHeader('X-Estia', '1');
+        xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+        xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+        xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress?.(e.loaded / e.total); };
+        xhr.onload = () => {
+          let body = {};
+          try { body = JSON.parse(xhr.responseText); } catch { /* e.g. an HTML error page */ }
+          if (xhr.status === 401) { location.href = '/login'; return reject(new Error('signed out')); }
+          if (xhr.status >= 200 && xhr.status < 300 && body.file) return resolve(body.file);
+          reject(Object.assign(new Error(body.error || xhr.statusText), { code: body.error || (xhr.status === 413 ? 'too_large' : undefined) }));
+        };
+        xhr.onerror = () => reject(Object.assign(new Error('network'), { code: 'network' }));
+        xhr.send(file);
+      })
+    };
+    if (state.view === 'member') render();
+    // Name shown next to notes and status changes.
+    call('/me').then(u => S.setActor(u.name || String(u.email || '').split('@')[0])).catch(() => {});
     // Sign-out link in the announcement strip (the menu row has no room for it).
     const out = document.createElement('a');
     out.href = '/logout'; out.textContent = 'Sign out'; out.className = 'signout';
