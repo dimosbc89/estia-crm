@@ -418,6 +418,60 @@ body.printable { display: block; padding: 24px; background: #fff; }
 body.printable .no-print { display: none !important; }
 body.printable .report-head-print { display: block; margin-bottom: 12px; }
 
+/* ---------- member page ---------- */
+.member-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.mcol { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 18px; margin: 0; padding: 18px 24px; }
+.facts dt, .m-label { font-size: 11.5px; font-weight: 700; color: var(--ink-3); text-transform: uppercase; letter-spacing: .1em; }
+.facts dd { margin: 3px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.m-label { margin-bottom: 4px; }
+.m-block { padding: 0 24px 18px; }
+.pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.note-add { display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid var(--line-soft); }
+.note-add textarea { min-height: 76px; }
+.m-activity { margin: 18px 24px; }
+.m-activity li { padding-right: 36px; }
+.note-del { position: absolute; right: 0; top: 0; border: 0; background: transparent; color: var(--ink-3); cursor: pointer; padding: 6px 9px; border-radius: 100px; font-size: 12px; line-height: 1; }
+.note-del:hover, .note-del:focus-visible { color: var(--bad); background: var(--bad-bg); outline: none; }
+.drop-zone { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; transition: background .15s; }
+.drop-zone p, .drop-zone #fileStatus { flex-basis: 100%; }
+.drop-zone #fileStatus:empty { display: none; }
+.m-files.dragging { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(255, 68, 56, .12); }
+.m-files.dragging .drop-zone { background: var(--brand-soft); }
+.files-list { border-top: 1px solid var(--line-soft); }
+.files-list li { justify-content: flex-start; padding-block: 10px; }
+.ficon, .fthumb { width: 40px; height: 40px; border-radius: 8px; flex: none; }
+.fthumb { object-fit: cover; background: var(--muted-bg); display: block; }
+.ficon { display: inline-flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 800; letter-spacing: .04em; background: var(--muted-bg); color: var(--ink-2); }
+.ficon.k-pdf { background: var(--bad-bg); color: var(--bad); }
+.ficon.k-sheet { background: var(--good-bg); color: var(--good); }
+.ficon.k-doc { background: var(--muted-bg); color: var(--ink); }
+.ficon.k-img, .ficon.k-media { background: var(--warn-bg); color: var(--warn); }
+.fmeta { flex: 1; min-width: 0; }
+.fname { font-weight: 700; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
+.fname:hover { color: var(--link); text-decoration: underline; }
+.factions { margin-left: auto; gap: 2px; }
+.factions .btn.sm { padding: 6px 11px; }
+.contacts-list li { flex-wrap: wrap; }
+.contacts-list .cmeta { flex: 1 1 200px; min-width: 0; }
+.cactions { gap: 6px; }
+.saved-flag { font-size: 12.5px; font-weight: 700; color: var(--good); opacity: 0; transition: opacity .2s; }
+.saved-flag.on { opacity: 1; }
+/* folded "Property info" on the visit report */
+.onsite > summary { cursor: pointer; list-style: none; }
+.onsite > summary::-webkit-details-marker { display: none; }
+.onsite > summary h2::after { content: " +"; color: var(--ink-3); font-weight: 400; }
+.onsite[open] > summary h2::after { content: " −"; }
+.onsite:not([open]) > summary { border-bottom: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+/* one column: membership first, then what gets used most */
+@media (max-width: 1000px) {
+  .member-grid { display: flex; flex-direction: column; align-items: stretch; }
+  .mcol { display: contents; }
+  .m-membership { order: 1; } .m-notes { order: 2; } .m-contacts { order: 3; } .m-files { order: 4; } .m-property { order: 5; } .m-visits { order: 6; } .m-jobs { order: 7; }
+}
+@media (pointer: coarse) { .kbd-hint, .drop-hint { display: none; } }
+
 /* ---------- responsive ---------- */
 /* the inline menu needs about 1280px with the logo and the CTA; below that it gets its own scrolling row */
 @media (max-width: 1279px) {
@@ -474,6 +528,9 @@ body.printable .report-head-print { display: block; margin-bottom: 12px; }
   .monthnav { flex: 1; justify-content: space-between; }
   .monthnav .label { min-width: 0; flex: 1; }
   .add-problem { grid-template-columns: 1fr; }
+  .facts { padding: 16px; gap: 12px 14px; }
+  .m-block { padding: 0 16px 16px; }
+  .m-activity { margin: 16px; }
   .checklist .ck-label { flex-basis: 100%; }
   .checklist .seg { display: flex; width: 100%; }
   .checklist .seg-btn { flex: 1; min-height: 44px; font-size: 14px; }
